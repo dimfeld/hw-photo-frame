@@ -1,0 +1,13 @@
+node_modules/
+.svelte-kit/
+build/
+data/
+.env
+.env.*
+!.env.example
+.pio/
+sdkconfig.*
+!sdkconfig.defaults
+firmware/include/secrets.h
+proofshot-artifacts/
+.DS_Store

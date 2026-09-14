@@ -1,0 +1,17 @@
+# Copy to ~/.config/systemd/user/still.service, then edit all paths.
+# Run: systemctl --user daemon-reload
+# Run: systemctl --user enable --now still
+# To run without a login session: loginctl enable-linger YOUR_USER
+[Unit]
+Description=Still photo frame companion
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/ABSOLUTE/PATH/hw-photo-frame/companion
+EnvironmentFile=/ABSOLUTE/PATH/hw-photo-frame/companion/.env
+ExecStart=/ABSOLUTE/PATH/TO/bun build/index.js
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
