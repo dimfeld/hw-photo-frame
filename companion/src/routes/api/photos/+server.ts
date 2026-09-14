@@ -9,6 +9,6 @@ export const POST: RequestHandler = async ({ request, url }) => {
   try { return json(await library.add(name, original), { status: 201 }); }
   catch (cause) {
     console.error('Photo upload failed', cause);
-    error(422, 'Could not store this photo. Use a valid JPEG, PNG, WebP, or TIFF image. Check server logs if it still fails.');
+    error(422, 'Could not store this photo. Use a valid JPEG, PNG, WebP, TIFF, or HEIC/HEIF image. Check server logs if it still fails.');
   }
 };

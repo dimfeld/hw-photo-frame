@@ -3,7 +3,7 @@
 ## Completed in the development workspace
 
 - `bun run check`: no errors or warnings.
-- `bun test`: 6 tests passed, with 33 assertions. Checks cover pixel encoding, fitting, EXIF orientation, invalid images, navigation, removal, settings validation, and database persistence.
+- `bun test`: 7 tests passed, with 36 assertions. Checks cover pixel encoding, fitting, EXIF orientation, HEIC/HEIF signature detection, invalid images, navigation, removal, settings validation, and database persistence.
 - `bun run build`: SvelteKit production build passed.
 - The production build ran under Bun. HTTP checks passed for token access, empty library, origin checks, photo upload, image headers, exact payload size, RGB565 color, and removal.
 - Browser checks passed for upload of two files, preview selection, fit and play-order changes, saved settings after reload, removal, and mobile layout. Test images were stored in a separate temporary library.

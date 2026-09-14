@@ -6,7 +6,7 @@ The Linux computer stores the photos. The frame gets each photo over local Wi-Fi
 
 ## Start the companion app on Linux
 
-Install Bun, then run:
+Install Bun and the `heif-convert` command from libheif, then run:
 
 ```sh
 cd companion
@@ -21,7 +21,9 @@ bun run build
 bun run start
 ```
 
-Open the configured address. Select **Add photos**, then choose JPEG, PNG, WebP, or TIFF files. The app applies EXIF orientation and prepares both display options:
+Open the configured address. Select **Add photos**, then choose JPEG, PNG, WebP, TIFF, or HEIC/HEIF files. The app uses `heif-convert` for HEIC/HEIF files, then applies EXIF orientation and prepares both display options:
+
+On Debian or Ubuntu, the command is provided by the `libheif-examples` package. The `heif-convert` executable must be available on the service user's `PATH`.
 
 - **Whole photo:** preserve the complete photo; use black borders as needed.
 - **Fill screen:** crop the edges to fill the screen.
@@ -70,7 +72,7 @@ At boot, the screen is black until the first complete photo arrives. It retries 
 
 ## Design and hardware notes
 
-The companion app uses SvelteKit with `adapter-node`, run by **Bun**, plus Bun SQLite and Sharp. Node alone cannot run this app because it uses `bun:sqlite`.
+The companion app uses SvelteKit with `adapter-node`, run by **Bun**, plus Bun SQLite, Sharp, and the `heif-convert` CLI from libheif. Node alone cannot run this app because it uses `bun:sqlite`.
 
 The firmware uses C++ and ESP-IDF through PlatformIO. It uses the board's RGB peripheral, PSRAM, GT911 touch controller, and I²C I/O device. It does not require LVGL. The network task owns the image buffer and display. The touch task sends FreeRTOS notification bits, so touches do not access image memory. Repeated actions during a download can merge into one pending action.
 

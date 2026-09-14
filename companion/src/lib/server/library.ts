@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { randomInt, randomUUID } from 'node:crypto';
-import { prepare, type Fit } from './images';
+import { prepareBoth, type Fit } from './images';
 export type Photo = { id: string; name: string; created: number };
 export type Settings = { seconds: number; fit: Fit; ordering: 'sequential' | 'random' };
 
@@ -35,8 +35,7 @@ export class Library {
     return settings;
   }
   async add(name: string, original: Buffer): Promise<Photo> {
-    const contain = await prepare(original, 'contain');
-    const cover = await prepare(original, 'cover');
+    const { contain, cover } = await prepareBoth(original);
     const photo = { id: randomUUID(), name, created: Date.now() };
     this.db.query('INSERT INTO photos VALUES (?,?,?,?,?,?,?,?)').run(photo.id, photo.name, photo.created,
       original, contain.pixels, cover.pixels, contain.preview, cover.preview);

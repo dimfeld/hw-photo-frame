@@ -58,7 +58,7 @@
 <div class="shell">
   <header><a href="/" class="brand"><span class="brand-icon">▣</span> still<span class="brand-dot">.</span></a><span class="header-note">YOUR PHOTOS, AT HOME</span><span class="local"><i></i> Local library</span></header>
   <main>
-    <div class="intro"><div><p class="eyebrow">A LITTLE SPACE FOR GOOD MEMORIES</p><h1>Make yourself at home.</h1><p class="sub">Add the photos you love. Let your frame do the rest.</p></div><label class="upload" class:disabled={busy}>＋ Add photos<input aria-label="Add photos" type="file" accept="image/jpeg,image/png,image/webp,image/tiff" multiple onchange={upload} disabled={busy}/></label></div>
+    <div class="intro"><div><p class="eyebrow">A LITTLE SPACE FOR GOOD MEMORIES</p><h1>Make yourself at home.</h1><p class="sub">Add the photos you love. Let your frame do the rest.</p></div><label class="upload" class:disabled={busy}>＋ Add photos<input aria-label="Add photos" type="file" accept="image/jpeg,image/png,image/webp,image/tiff,image/heic,image/heif,.heic,.heif" multiple onchange={upload} disabled={busy}/></label></div>
     <div class="notice" class:error={failed} role="status" aria-live="polite">{message || 'Photos stay on this computer. No cloud account needed.'}</div>
     <section class="workspace" aria-label="Frame preview and settings">
       <div class="preview-panel"><div class="section-label"><h2>On your frame</h2><span>PREVIEW · 1024 × 600</span></div>
@@ -74,7 +74,7 @@
     </section>
     <section class="library"><div class="library-heading"><h2>Your collection <span>{data.photos.length}</span></h2><p>Small moments. Always in view.</p></div>
       {#if data.photos.length}<div class="grid">{#each data.photos as photo}<article class:active={current?.id === photo.id}><button class="photo" onclick={() => selected = photo.id} aria-label={`Preview ${photo.name}`}><img loading="lazy" src={`/photo/${photo.id}?fit=cover`} alt={photo.name}/></button><div class="photo-meta"><span title={photo.name}>{photo.name}</span><button class="remove" aria-label={`Remove ${photo.name}`} disabled={busy} onclick={() => remove(photo.id)}>Remove</button></div></article>{/each}</div>
-      {:else}<div class="empty-library"><span>＋</span><div><h3>Start with a favorite.</h3><p>Use “Add photos” to upload JPEG, PNG, WebP, or TIFF files.</p></div></div>{/if}
+      {:else}<div class="empty-library"><span>＋</span><div><h3>Start with a favorite.</h3><p>Use “Add photos” to upload JPEG, PNG, WebP, TIFF, or HEIC/HEIF files.</p></div></div>{/if}
     </section>
   </main><footer><span>still. <span class="muted">Made for the moments between.</span></span><span>WAVESHARE 7″ TYPE B</span></footer>
 </div>

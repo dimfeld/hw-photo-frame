@@ -4,13 +4,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { Library } from '../src/lib/server/library';
-import { prepare, FRAME_BYTES, WIDTH, HEIGHT } from '../src/lib/server/images';
+import { prepare, FRAME_BYTES, WIDTH, HEIGHT, isHeif } from '../src/lib/server/images';
 const libraries: Library[] = [];
 afterEach(() => { for (const lib of libraries.splice(0)) lib.db.close(); });
 function library(path = ':memory:') { const lib = new Library(path); libraries.push(lib); return lib; }
 const photo = () => sharp({ create: { width: 100, height: 200, channels: 3, background: '#ff0000' } }).png().toBuffer();
 
 describe('image contract', () => {
+  test('HEIC and HEIF file signatures are detected without relying on the file name', () => {
+    const heic = Buffer.alloc(20);
+    heic.write('ftypheic', 4, 'ascii');
+    const heif = Buffer.alloc(20);
+    heif.write('ftypmif1', 4, 'ascii');
+    expect(isHeif(heic)).toBe(true);
+    expect(isHeif(heif)).toBe(true);
+    expect(isHeif(Buffer.from('not an image'))).toBe(false);
+  });
   test('contain adds black borders; cover fills the panel; pixels are little-endian RGB565', async () => {
     const input = await photo();
     const contain = await prepare(input, 'contain');
