@@ -7,6 +7,53 @@
 #include <cstring>
 
 static i2c_master_dev_handle_t touch;
+static uint16_t *frame_buffer;
+
+static const uint8_t FONT[26][5] = {
+    {0x7e, 0x09, 0x09, 0x09, 0x7e}, {0x7f, 0x49, 0x49, 0x49, 0x36},
+    {0x3e, 0x41, 0x41, 0x41, 0x22}, {0x7f, 0x41, 0x41, 0x22, 0x1c},
+    {0x7f, 0x49, 0x49, 0x49, 0x41}, {0x7f, 0x09, 0x09, 0x09, 0x01},
+    {0x3e, 0x41, 0x49, 0x49, 0x7a}, {0x7f, 0x08, 0x08, 0x08, 0x7f},
+    {0x00, 0x41, 0x7f, 0x41, 0x00}, {0x20, 0x40, 0x41, 0x3f, 0x01},
+    {0x7f, 0x08, 0x14, 0x22, 0x41}, {0x7f, 0x40, 0x40, 0x40, 0x40},
+    {0x7f, 0x02, 0x0c, 0x02, 0x7f}, {0x7f, 0x04, 0x08, 0x10, 0x7f},
+    {0x3e, 0x41, 0x41, 0x41, 0x3e}, {0x7f, 0x09, 0x09, 0x09, 0x06},
+    {0x3e, 0x41, 0x51, 0x21, 0x5e}, {0x7f, 0x09, 0x19, 0x29, 0x46},
+    {0x46, 0x49, 0x49, 0x49, 0x31}, {0x01, 0x01, 0x7f, 0x01, 0x01},
+    {0x3f, 0x40, 0x40, 0x40, 0x3f}, {0x1f, 0x20, 0x40, 0x20, 0x1f},
+    {0x7f, 0x20, 0x18, 0x20, 0x7f}, {0x63, 0x14, 0x08, 0x14, 0x63},
+    {0x07, 0x08, 0x70, 0x08, 0x07}, {0x61, 0x51, 0x49, 0x45, 0x43},
+};
+
+void board_show_status(const char *text) {
+    constexpr int scale = 5;
+    constexpr int glyph_width = 5;
+    constexpr int glyph_gap = 1;
+    constexpr int glyph_height = 7;
+    const size_t length = strlen(text);
+    const int text_width = static_cast<int>(length) * (glyph_width + glyph_gap) * scale - glyph_gap * scale;
+    const int left = (WIDTH - text_width) / 2;
+    const int top = (HEIGHT - glyph_height * scale) / 2;
+    memset(frame_buffer, 0, FRAME_BYTES);
+    for (size_t index = 0; index < length; ++index) {
+        const char character = text[index];
+        if (character == ' ') continue;
+        if (character < 'A' || character > 'Z') continue;
+        const uint8_t *glyph = FONT[character - 'A'];
+        const int glyph_left = left + static_cast<int>(index) * (glyph_width + glyph_gap) * scale;
+        for (int column = 0; column < glyph_width; ++column) {
+            for (int row = 0; row < glyph_height; ++row) {
+                if (!(glyph[column] & (1 << row))) continue;
+                for (int dx = 0; dx < scale; ++dx) {
+                    for (int dy = 0; dy < scale; ++dy) {
+                        frame_buffer[(top + row * scale + dy) * WIDTH + glyph_left + column * scale + dx] = 0xd7bd;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Pin map, timing, I/O registers, and reset delays follow Waveshare's 08_Touch example.
 static void write_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t value) {
     uint8_t bytes[] = {reg, value};
@@ -73,7 +120,8 @@ esp_lcd_panel_handle_t board_init() {
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
     void *fb;
     ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel, 1, &fb));
-    memset(fb, 0, FRAME_BYTES);
+    frame_buffer = static_cast<uint16_t *>(fb);
+    memset(frame_buffer, 0, FRAME_BYTES);
     write_reg(io, 0x03, output | (1 << 2));
     return panel;
 }

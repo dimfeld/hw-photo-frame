@@ -68,7 +68,7 @@ Touch controls use three equal vertical parts of the screen:
 
 A held touch produces one action. In random mode, “previous” means the previous photo in upload order; it is not a history of random choices. Manual changes work while paused. Pause state resets when the board restarts.
 
-At boot, the screen is black until the first complete photo arrives. It retries every 10 seconds until it receives server settings. It then uses the saved photo time for retries. The current photo is in RAM; it does not survive a power loss. A missing or empty server does not erase a photo already on screen.
+At boot, the screen shows `CONNECTING TO WIFI`. After Wi-Fi connects, it shows `WIFI CONNECTED` until the first complete photo arrives. It retries every 10 seconds until it receives server settings. It then uses the saved photo time for retries. The current photo is in RAM; it does not survive a power loss. A missing or empty server does not erase a photo already on screen.
 
 ## Design and hardware notes
 
