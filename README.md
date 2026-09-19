@@ -46,7 +46,7 @@ See [the systemd service example](deploy/still.service) to start the app when Li
 4. Set your 2.4 GHz Wi-Fi name and password. Set `FRAME_SERVER_URL` to the Linux server address, without a trailing slash. Do not use `localhost` here.
 5. If you set `FRAME_TOKEN` on the server, enter the same value in `secrets.h`.
 6. Connect the board's USB port. Select **Build**, then **Upload** in PlatformIO.
-7. Open **Serial Monitor** at 115200 baud. It reports Wi-Fi connection, transfer failures, pause state, and displayed photo IDs.
+7. Open **Serial Monitor** at 115200 baud. It reports startup, Wi-Fi connection and retry events, transfer failures, pause state, and displayed photo IDs.
 
 Command-line equivalents, from the repository root:
 

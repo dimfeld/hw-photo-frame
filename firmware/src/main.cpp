@@ -24,8 +24,13 @@ static const char *TAG = "frame";
 static TaskHandle_t frame_task;
 static TaskHandle_t touch_task_handle;
 static constexpr uint32_t NEXT = 1, PREVIOUS = 2, PAUSE = 4, CONNECTED = 8;
-static void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
-    if (base == WIFI_EVENT && (id == WIFI_EVENT_STA_START || id == WIFI_EVENT_STA_DISCONNECTED)) {
+static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "Wi-Fi started; connecting");
+        esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(event_data);
+        ESP_LOGW(TAG, "Wi-Fi disconnected (reason %u); retrying", event->reason);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ESP_LOGI(TAG, "Wi-Fi connected");
@@ -109,6 +114,7 @@ static bool fetch_photo(uint8_t *pixels, const std::string &after, bool previous
     return complete;
 }
 extern "C" void app_main() {
+    ESP_LOGI(TAG, "Starting photo frame");
     frame_task = xTaskGetCurrentTaskHandle();
     auto panel = board_init();
     board_show_status("CONNECTING TO WIFI");
@@ -136,6 +142,7 @@ extern "C" void app_main() {
     memcpy(wifi.sta.password, FRAME_WIFI_PASSWORD, sizeof(FRAME_WIFI_PASSWORD));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi));
+    ESP_LOGI(TAG, "Connecting to configured Wi-Fi network");
     ESP_ERROR_CHECK(esp_wifi_start());
     int64_t seconds = FRAME_RETRY_SECONDS;
     int64_t due = 0;
