@@ -30,7 +30,7 @@ On Debian or Ubuntu, the command is provided by the `libheif-examples` package. 
 
 When the selected photo is in portrait orientation, the companion finds the next portrait photo in upload order. It places both photos side by side with a two-pixel white divider. If there is no other portrait photo, it shows the selected photo by itself. Landscape photos use the previous layout.
 
-Set the photo time and play order, then select **Save settings**. Click a photo to preview it. The preview does not change the photo currently on the physical frame. The frame gets settings on its next request. When paused, touch its center to resume, or its left or right side to request a photo.
+Set the photo time, crossfade time, and play order, then select **Save settings**. The crossfade defaults to two seconds; set it to zero to switch images immediately. Click a photo to preview it. The preview does not change the photo currently on the physical frame. The frame gets settings on its next request. When paused, touch its center to resume, or its left or right side to request a photo.
 
 The app stores originals, previews, prepared images, and settings in `photos.sqlite`. Each photo needs about 2.46 MB for its two full-frame pixel images, plus its original and JPEG previews. Portrait photos need about 1.23 MB more for the two side-by-side layouts. Stop the app before you copy the data directory for a backup. Keep the whole directory, including any SQLite WAL files. Run one app process for this library.
 
@@ -78,7 +78,7 @@ The companion app uses SvelteKit with `adapter-node`, run by **Bun**, plus Bun S
 
 The firmware uses C++ and ESP-IDF through PlatformIO. It uses the board's RGB peripheral, PSRAM, GT911 touch controller, and I²C I/O device. It does not require LVGL. The network task owns the image buffer and display. The touch task sends FreeRTOS notification bits, so touches do not access image memory. Repeated actions during a download can merge into one pending action.
 
-Each transfer is **1,228,800 bytes** of little-endian RGB565 data. The server does image decoding, orientation, scaling, and color conversion. The firmware checks response status, format, photo ID, length, and complete HTTP delivery before it copies the new photo to the display. The receive buffer and LCD buffer use about 2.46 MB of PSRAM in total. The RGB driver uses Waveshare's bounce-buffer size and panel timing. A full-screen copy can show a short tear during a change; there is no fade effect.
+Each transfer is **1,228,800 bytes** of little-endian RGB565 data. The server does image decoding, orientation, scaling, and color conversion. The firmware checks response status, format, photo ID, length, and complete HTTP delivery before it changes the display. It blends the previous and downloaded images over the configured crossfade time. The two image buffers and LCD buffer use about 3.69 MB of PSRAM in total. The RGB driver uses Waveshare's bounce-buffer size and panel timing.
 
 This targets **7B only**. The original 800 × 480 board has a different configuration. The I/O register protocol follows the Type B example at address `0x24`; do not replace it with a generic CH422G driver based on the family name in the wiki.
 

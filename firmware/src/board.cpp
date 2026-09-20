@@ -2,8 +2,10 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_lcd_panel_rgb.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <algorithm>
 #include <cstring>
 
 static i2c_master_dev_handle_t touch;
@@ -52,6 +54,41 @@ void board_show_status(const char *text) {
             }
         }
     }
+}
+
+void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int64_t duration_us) {
+    const auto *from = reinterpret_cast<const uint16_t *>(from_bytes);
+    const auto *target = reinterpret_cast<const uint16_t *>(target_bytes);
+    if (duration_us <= 0) {
+        memcpy(frame_buffer, target, FRAME_BYTES);
+        return;
+    }
+
+    // This period comes from the configured 30 MHz pixel clock and panel timings.
+    constexpr int64_t frame_period_us =
+        1000000LL * (WIDTH + 162 + 152 + 48) * (HEIGHT + 45 + 13 + 3) / 30000000;
+    // RGB565 green has 64 levels, so more than 64 blend steps cannot add color precision.
+    const int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
+    const int64_t started = esp_timer_get_time();
+    for (int step = 1; step <= steps; ++step) {
+        const int alpha = step * 256 / steps;
+        const int inverse = 256 - alpha;
+        for (size_t pixel = 0; pixel < static_cast<size_t>(WIDTH) * HEIGHT; ++pixel) {
+            const uint16_t old_pixel = from[pixel];
+            const uint16_t new_pixel = target[pixel];
+            const int red = ((old_pixel >> 11) * inverse + (new_pixel >> 11) * alpha + 128) >> 8;
+            const int green = (((old_pixel >> 5) & 0x3f) * inverse + ((new_pixel >> 5) & 0x3f) * alpha + 128) >> 8;
+            const int blue = ((old_pixel & 0x1f) * inverse + (new_pixel & 0x1f) * alpha + 128) >> 8;
+            frame_buffer[pixel] = static_cast<uint16_t>((red << 11) | (green << 5) | blue);
+        }
+        const int64_t elapsed = (duration_us / steps) * step + (duration_us % steps) * step / steps;
+        const int64_t due = started + elapsed;
+        while (esp_timer_get_time() < due) {
+            const int64_t ticks = (due - esp_timer_get_time()) / (1000000 / configTICK_RATE_HZ);
+            vTaskDelay(static_cast<TickType_t>(std::max<int64_t>(1, std::min<int64_t>(ticks, portMAX_DELAY - 1))));
+        }
+    }
+    memcpy(frame_buffer, target, FRAME_BYTES);
 }
 
 // Pin map, timing, I/O registers, and reset delays follow Waveshare's 08_Touch example.

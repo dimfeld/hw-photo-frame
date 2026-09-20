@@ -60,7 +60,7 @@ describe('library', () => {
     expect(lib.next(a.id, null)?.id).toBe(b.id);
     expect(lib.next(b.id, null)?.id).toBe(a.id);
     expect(lib.next(a.id, 'previous')?.id).toBe(b.id);
-    lib.saveSettings({ seconds: 300, fit: 'cover', ordering: 'random' });
+    lib.saveSettings({ seconds: 300, crossfadeSeconds: 4, fit: 'cover', ordering: 'random' });
     expect(lib.next(a.id, null)?.id).toBe(b.id);
     expect(lib.image(a.id, 'cover', false)?.length).toBe(FRAME_BYTES);
     expect(lib.remove(a.id)).toBe(true);
@@ -124,12 +124,13 @@ describe('library', () => {
     const first = new Library(path);
     try {
       const added = await first.add('persistent.png', await photo());
-      first.saveSettings({ seconds: 17, fit: 'cover', ordering: 'sequential' });
+      first.saveSettings({ seconds: 17, crossfadeSeconds: 3, fit: 'cover', ordering: 'sequential' });
       first.db.close();
       const second = new Library(path);
       try {
         expect(second.list()[0].id).toBe(added.id);
         expect(second.settings().seconds).toBe(17);
+        expect(second.settings().crossfadeSeconds).toBe(3);
         expect(second.image(added.id, 'cover', false)?.length).toBe(FRAME_BYTES);
       } finally { second.db.close(); }
     } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -137,9 +138,17 @@ describe('library', () => {
   test('invalid settings leave saved settings intact', () => {
     const lib = library();
     for (const seconds of [0, -1, 1.5, null, Infinity, '300']) {
-      expect(() => lib.saveSettings({ seconds, fit: 'cover', ordering: 'sequential' })).toThrow();
+      expect(() => lib.saveSettings({ seconds, crossfadeSeconds: 2, fit: 'cover', ordering: 'sequential' })).toThrow();
     }
-    expect(() => lib.saveSettings({ seconds: 1, fit: 'bad', ordering: 'bad' })).toThrow();
-    expect(lib.settings()).toEqual({ seconds: 10, fit: 'contain', ordering: 'sequential' });
+    for (const crossfadeSeconds of [-1, 1.5, null, Infinity, '2']) {
+      expect(() => lib.saveSettings({ seconds: 1, crossfadeSeconds, fit: 'cover', ordering: 'sequential' })).toThrow();
+    }
+    expect(() => lib.saveSettings({ seconds: 1, crossfadeSeconds: 2, fit: 'bad', ordering: 'bad' })).toThrow();
+    expect(lib.settings()).toEqual({ seconds: 10, crossfadeSeconds: 2, fit: 'contain', ordering: 'sequential' });
+  });
+  test('settings from an older database get the default crossfade time', () => {
+    const lib = library();
+    lib.db.query('UPDATE settings SET value=? WHERE id=1').run(JSON.stringify({ seconds: 9, fit: 'cover', ordering: 'random' }));
+    expect(lib.settings()).toEqual({ seconds: 9, crossfadeSeconds: 2, fit: 'cover', ordering: 'random' });
   });
 });

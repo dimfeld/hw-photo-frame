@@ -8,6 +8,7 @@
   let message = $state('');
   let failed = $state(false);
   let seconds = $state<number | undefined>(untrack(() => data.settings.seconds));
+  let crossfadeSeconds = $state<number | undefined>(untrack(() => data.settings.crossfadeSeconds));
   let fit = $state(untrack(() => data.settings.fit));
   let ordering = $state(untrack(() => data.settings.ordering));
   const current = $derived(data.photos.find(p => p.id === selected) ?? data.photos[0]);
@@ -38,7 +39,7 @@
   async function save(event: SubmitEvent) {
     event.preventDefault(); busy = true; failed = false;
     try {
-      await checked(await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seconds, fit, ordering }) }));
+      await checked(await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seconds, crossfadeSeconds, fit, ordering }) }));
       await invalidateAll(); message = 'Settings saved. The frame will use them on its next request.';
     } catch (e) { failed = true; message = (e as Error).message; }
     finally { busy = false; }
@@ -67,6 +68,7 @@
       </div>
       <aside><p class="eyebrow">SET THE PACE</p><h2>A slideshow that suits you.</h2><form onsubmit={save}>
         <label for="seconds">Time per photo</label><div class="seconds"><input id="seconds" type="number" min="1" step="1" required placeholder="Enter seconds" bind:value={seconds}/><span>seconds</span></div>
+        <label for="crossfadeSeconds">Crossfade time</label><div class="seconds"><input id="crossfadeSeconds" type="number" min="0" step="1" required placeholder="Enter seconds" bind:value={crossfadeSeconds}/><span>seconds</span></div>
         <label for="fit">Photo fit</label><select id="fit" bind:value={fit}><option value="contain">Whole photo · black borders</option><option value="cover">Fill screen · crop edges</option></select>
         <label for="ordering">Play order</label><select id="ordering" bind:value={ordering}><option value="sequential">In upload order</option><option value="random">Random · no immediate repeat</option></select>
         <button class="save" disabled={busy}>Save settings <span>↗</span></button>

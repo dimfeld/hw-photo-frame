@@ -59,6 +59,7 @@ static void touch_task(void *) {
 struct Reply {
     std::string id, format;
     int64_t seconds = -1;
+    int64_t crossfade_seconds = -1;
 };
 static esp_err_t http_event(esp_http_client_event_t *event) {
     if (event->event_id != HTTP_EVENT_ON_HEADER) return ESP_OK;
@@ -69,6 +70,11 @@ static esp_err_t http_event(esp_http_client_event_t *event) {
         char *end;
         const long long value = strtoll(event->header_value, &end, 10);
         if (*end == '\0' && value >= 0 && value <= INT64_MAX / 1000000) reply.seconds = value;
+    }
+    if (!strcasecmp(event->header_key, "X-Crossfade-Seconds")) {
+        char *end;
+        const long long value = strtoll(event->header_value, &end, 10);
+        if (*end == '\0' && value >= 0 && value <= INT64_MAX / 1000000) reply.crossfade_seconds = value;
     }
     return ESP_OK;
 }
@@ -118,8 +124,9 @@ extern "C" void app_main() {
     frame_task = xTaskGetCurrentTaskHandle();
     auto panel = board_init();
     board_show_status("CONNECTING TO WIFI");
-    auto pixels = static_cast<uint8_t *>(heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    ESP_ERROR_CHECK(pixels ? ESP_OK : ESP_ERR_NO_MEM);
+    auto current_pixels = static_cast<uint8_t *>(heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto download_pixels = static_cast<uint8_t *>(heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    ESP_ERROR_CHECK(current_pixels && download_pixels ? ESP_OK : ESP_ERR_NO_MEM);
     // Use the IDF main-task stack size for I2C calls and driver error logs.
     BaseType_t created = xTaskCreate(touch_task, "touch", CONFIG_ESP_MAIN_TASK_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &touch_task_handle);
     configASSERT(created == pdPASS);
@@ -145,9 +152,11 @@ extern "C" void app_main() {
     ESP_LOGI(TAG, "Connecting to configured Wi-Fi network");
     ESP_ERROR_CHECK(esp_wifi_start());
     int64_t seconds = FRAME_RETRY_SECONDS;
+    int64_t crossfade_seconds = 2;
     int64_t due = 0;
     bool paused = false;
     std::string current;
+    bool has_photo = false;
     for (;;) {
         TickType_t wait = portMAX_DELAY;
         if (!paused && seconds > 0) {
@@ -161,16 +170,24 @@ extern "C" void app_main() {
             paused = !paused;
             ESP_LOGI(TAG, "%s", paused ? "Slideshow paused" : "Slideshow resumed");
         }
-        if (action & CONNECTED) board_show_status("WIFI CONNECTED");
+        if ((action & CONNECTED) && !has_photo) board_show_status("WIFI CONNECTED");
         const bool manual = action & (NEXT | PREVIOUS);
         if (!manual && (paused || (!(action & CONNECTED) && (seconds == 0 || esp_timer_get_time() < due)))) continue;
         Reply reply;
-        if (fetch_photo(pixels, current, action & PREVIOUS, reply)) {
-            ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, 0, WIDTH, HEIGHT, pixels));
+        if (fetch_photo(download_pixels, current, action & PREVIOUS, reply)) {
+            const int64_t fade = reply.crossfade_seconds >= 0 ? reply.crossfade_seconds : crossfade_seconds;
+            if (has_photo && memcmp(current_pixels, download_pixels, FRAME_BYTES) != 0) {
+                board_crossfade(current_pixels, download_pixels, fade * 1000000);
+            } else {
+                ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, 0, WIDTH, HEIGHT, download_pixels));
+            }
+            std::swap(current_pixels, download_pixels);
             current = reply.id;
+            has_photo = true;
             ESP_LOGI(TAG, "Photo displayed: %s", current.c_str());
         }
         if (reply.seconds >= 0) seconds = reply.seconds;
+        if (reply.crossfade_seconds >= 0) crossfade_seconds = reply.crossfade_seconds;
         due = esp_timer_get_time() + seconds * 1000000;
     }
 }

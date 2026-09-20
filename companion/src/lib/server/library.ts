@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { randomInt, randomUUID } from 'node:crypto';
 import { combinePortraits, prepareBoth, preparePortrait, type Fit } from './images';
 export type Photo = { id: string; name: string; created: number };
-export type Settings = { seconds: number; fit: Fit; ordering: 'sequential' | 'random' };
+export type Settings = { seconds: number; crossfadeSeconds: number; fit: Fit; ordering: 'sequential' | 'random' };
 
 export class Library {
   readonly db: Database;
@@ -20,22 +20,25 @@ export class Library {
     if (!columns.has('portrait')) this.db.exec('ALTER TABLE photos ADD COLUMN portrait INTEGER');
     if (!columns.has('pair_contain')) this.db.exec('ALTER TABLE photos ADD COLUMN pair_contain BLOB');
     if (!columns.has('pair_cover')) this.db.exec('ALTER TABLE photos ADD COLUMN pair_cover BLOB');
-    this.db.query('INSERT OR IGNORE INTO settings VALUES (1, ?)').run(JSON.stringify({ seconds: 10, fit: 'contain', ordering: 'sequential' }));
+    this.db.query('INSERT OR IGNORE INTO settings VALUES (1, ?)').run(JSON.stringify({ seconds: 10, crossfadeSeconds: 2, fit: 'contain', ordering: 'sequential' }));
   }
   list(): Photo[] {
     return this.db.query('SELECT id,name,created FROM photos ORDER BY created,id').all() as Photo[];
   }
   settings(): Settings {
-    return JSON.parse((this.db.query('SELECT value FROM settings WHERE id=1').get() as { value: string }).value);
+    const saved = JSON.parse((this.db.query('SELECT value FROM settings WHERE id=1').get() as { value: string }).value);
+    return { ...saved, crossfadeSeconds: saved.crossfadeSeconds ?? 2 };
   }
   saveSettings(value: unknown): Settings {
     const s = value as Settings;
-    // Seconds become milliseconds in an ESP32 signed 64-bit timer.
+    // Seconds become microseconds in an ESP32 signed 64-bit timer.
     if (!s || !Number.isSafeInteger(s.seconds) || s.seconds! <= 0 || s.seconds! > Math.floor(Number.MAX_SAFE_INTEGER / 1000000)
+      || !Number.isSafeInteger(s.crossfadeSeconds) || s.crossfadeSeconds < 0
+      || s.crossfadeSeconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000000)
       || !['contain', 'cover'].includes(s.fit) || !['sequential', 'random'].includes(s.ordering)) {
-      throw new Error('Enter a positive whole number of seconds and valid display options.');
+      throw new Error('Enter valid whole-second timing and display options.');
     }
-    const settings = { seconds: s.seconds, fit: s.fit, ordering: s.ordering };
+    const settings = { seconds: s.seconds, crossfadeSeconds: s.crossfadeSeconds, fit: s.fit, ordering: s.ordering };
     this.db.query('UPDATE settings SET value=? WHERE id=1').run(JSON.stringify(settings));
     return settings;
   }
