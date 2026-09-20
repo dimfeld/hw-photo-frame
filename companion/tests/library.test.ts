@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { Library } from '../src/lib/server/library';
-import { prepare, FRAME_BYTES, WIDTH, HEIGHT, isHeif } from '../src/lib/server/images';
+import { prepare, DIVIDER_WIDTH, FRAME_BYTES, HEIGHT, isHeif, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
 const libraries: Library[] = [];
 afterEach(() => { for (const lib of libraries.splice(0)) lib.db.close(); });
 function library(path = ':memory:') { const lib = new Library(path); libraries.push(lib); return lib; }
 const photo = () => sharp({ create: { width: 100, height: 200, channels: 3, background: '#ff0000' } }).png().toBuffer();
+const solid = (width: number, height: number, background: string) =>
+  sharp({ create: { width, height, channels: 3, background } }).png().toBuffer();
 
 describe('image contract', () => {
   test('HEIC and HEIF file signatures are detected without relying on the file name', () => {
@@ -64,6 +67,56 @@ describe('library', () => {
     expect(lib.image(a.id, 'contain', true)).toBeNull();
     expect(lib.next(a.id, null)?.id).toBe(b.id);
     expect(lib.next(b.id, null)?.id).toBe(b.id);
+  });
+  test('portrait photos use the next portrait partner and a two-pixel white divider', async () => {
+    const lib = library();
+    const red = await lib.add('red.png', await solid(100, 200, '#ff0000'));
+    const landscape = await lib.add('green.png', await solid(200, 100, '#00ff00'));
+    await lib.add('blue.png', await solid(100, 200, '#0000ff'));
+
+    const paired = await lib.frame(red.id, 'contain');
+    expect(paired?.length).toBe(FRAME_BYTES);
+    const pixel = (x: number, y = HEIGHT / 2) => paired!.readUInt16LE((y * WIDTH + x) * 2);
+    expect(pixel(Math.floor(PORTRAIT_WIDTH / 2))).toBe(0xf800);
+    for (let x = PORTRAIT_WIDTH; x < PORTRAIT_WIDTH + DIVIDER_WIDTH; x++) expect(pixel(x)).toBe(0xffff);
+    expect(pixel(PORTRAIT_WIDTH + DIVIDER_WIDTH + Math.floor(PORTRAIT_WIDTH / 2))).toBe(0x001f);
+    expect(await lib.frame(landscape.id, 'contain')).toEqual(lib.image(landscape.id, 'contain', false));
+  });
+  test('a portrait remains full-screen when no other portrait exists', async () => {
+    const lib = library();
+    const red = await lib.add('red.png', await photo());
+    await lib.add('green.png', await solid(200, 100, '#00ff00'));
+    expect(await lib.frame(red.id, 'cover')).toEqual(lib.image(red.id, 'cover', false));
+  });
+  test('portrait data is rebuilt lazily for photos from an older database', async () => {
+    const lib = library();
+    const red = await lib.add('red.png', await photo());
+    await lib.add('blue.png', await solid(100, 200, '#0000ff'));
+    lib.db.query('UPDATE photos SET portrait=NULL,pair_contain=NULL,pair_cover=NULL WHERE id=?').run(red.id);
+    const paired = await lib.frame(red.id, 'contain');
+    expect(paired?.readUInt16LE((PORTRAIT_WIDTH * 2))).toBe(0xffff);
+    expect((lib.db.query('SELECT portrait FROM photos WHERE id=?').get(red.id) as { portrait: number }).portrait).toBe(1);
+  });
+  test('opening the previous database schema adds portrait columns', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'still-test-'));
+    const path = join(directory, 'library.sqlite');
+    const old = new Database(path, { create: true });
+    old.exec(`CREATE TABLE photos (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, created INTEGER NOT NULL,
+      original BLOB NOT NULL, contain BLOB NOT NULL, cover BLOB NOT NULL,
+      preview_contain BLOB NOT NULL, preview_cover BLOB NOT NULL
+    )`);
+    old.close();
+    const migrated = new Library(path);
+    try {
+      const columns = (migrated.db.query('PRAGMA table_info(photos)').all() as { name: string }[]).map(column => column.name);
+      expect(columns).toContain('portrait');
+      expect(columns).toContain('pair_contain');
+      expect(columns).toContain('pair_cover');
+    } finally {
+      migrated.db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
   test('photos and settings survive reopening the database', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'still-test-'));

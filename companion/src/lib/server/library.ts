@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { randomInt, randomUUID } from 'node:crypto';
-import { prepareBoth, type Fit } from './images';
+import { combinePortraits, prepareBoth, preparePortrait, type Fit } from './images';
 export type Photo = { id: string; name: string; created: number };
 export type Settings = { seconds: number; fit: Fit; ordering: 'sequential' | 'random' };
 
@@ -12,9 +12,14 @@ export class Library {
       CREATE TABLE IF NOT EXISTS photos (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, created INTEGER NOT NULL,
         original BLOB NOT NULL, contain BLOB NOT NULL, cover BLOB NOT NULL,
-        preview_contain BLOB NOT NULL, preview_cover BLOB NOT NULL
+        preview_contain BLOB NOT NULL, preview_cover BLOB NOT NULL,
+        portrait INTEGER, pair_contain BLOB, pair_cover BLOB
       );
       CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);`);
+    const columns = new Set((this.db.query('PRAGMA table_info(photos)').all() as { name: string }[]).map(column => column.name));
+    if (!columns.has('portrait')) this.db.exec('ALTER TABLE photos ADD COLUMN portrait INTEGER');
+    if (!columns.has('pair_contain')) this.db.exec('ALTER TABLE photos ADD COLUMN pair_contain BLOB');
+    if (!columns.has('pair_cover')) this.db.exec('ALTER TABLE photos ADD COLUMN pair_cover BLOB');
     this.db.query('INSERT OR IGNORE INTO settings VALUES (1, ?)').run(JSON.stringify({ seconds: 10, fit: 'contain', ordering: 'sequential' }));
   }
   list(): Photo[] {
@@ -35,10 +40,13 @@ export class Library {
     return settings;
   }
   async add(name: string, original: Buffer): Promise<Photo> {
-    const { contain, cover } = await prepareBoth(original);
+    const { contain, cover, portrait, pairContain, pairCover } = await prepareBoth(original);
     const photo = { id: randomUUID(), name, created: Date.now() };
-    this.db.query('INSERT INTO photos VALUES (?,?,?,?,?,?,?,?)').run(photo.id, photo.name, photo.created,
-      original, contain.pixels, cover.pixels, contain.preview, cover.preview);
+    this.db.query(`INSERT INTO photos
+      (id,name,created,original,contain,cover,preview_contain,preview_cover,portrait,pair_contain,pair_cover)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(photo.id, photo.name, photo.created,
+      original, contain.pixels, cover.pixels, contain.preview, cover.preview,
+      portrait ? 1 : 0, pairContain, pairCover);
     return photo;
   }
   remove(id: string): boolean {
@@ -48,6 +56,30 @@ export class Library {
     const column = preview ? `preview_${fit}` : fit;
     const row = this.db.query(`SELECT ${column} AS bytes FROM photos WHERE id=?`).get(id) as { bytes: Uint8Array } | null;
     return row ? Buffer.from(row.bytes) : null;
+  }
+  private async portraitImage(id: string, fit: Fit): Promise<{ portrait: boolean; bytes: Buffer | null } | null> {
+    const row = this.db.query(`SELECT original,portrait,pair_${fit} AS bytes FROM photos WHERE id=?`).get(id) as
+      { original: Uint8Array; portrait: number | null; bytes: Uint8Array | null } | null;
+    if (!row) return null;
+    if (row.portrait !== null) return { portrait: row.portrait === 1, bytes: row.bytes ? Buffer.from(row.bytes) : null };
+    const prepared = await preparePortrait(Buffer.from(row.original));
+    this.db.query('UPDATE photos SET portrait=?,pair_contain=?,pair_cover=? WHERE id=?').run(
+      prepared.portrait ? 1 : 0, prepared.pairContain, prepared.pairCover, id);
+    return { portrait: prepared.portrait, bytes: fit === 'contain' ? prepared.pairContain : prepared.pairCover };
+  }
+  async frame(id: string, fit: Fit): Promise<Buffer | null> {
+    const full = this.image(id, fit, false);
+    if (!full) return null;
+    const primary = await this.portraitImage(id, fit);
+    if (!primary?.portrait || !primary.bytes) return full;
+    const photos = this.list();
+    const index = photos.findIndex(photo => photo.id === id);
+    for (let offset = 1; offset < photos.length; offset++) {
+      const candidate = photos[(index + offset) % photos.length];
+      const partner = await this.portraitImage(candidate.id, fit);
+      if (partner?.portrait && partner.bytes) return combinePortraits(primary.bytes, partner.bytes);
+    }
+    return full;
   }
   next(after: string | null, direction: string | null): Photo | undefined {
     const photos = this.list();

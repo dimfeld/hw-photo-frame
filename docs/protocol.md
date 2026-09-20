@@ -19,6 +19,8 @@ A photo response has status `200` and these headers:
 
 The body has 1024 × 600 pixels, in rows from top to bottom and left to right. Each pixel is an unsigned little-endian 16-bit value: red in bits 15–11, green in bits 10–5, and blue in bits 4–0. There is no file header or row padding.
 
+If the selected photo has portrait orientation and the library has another portrait photo, the body contains both photos in 511 × 600 areas. A two-pixel white divider separates them. The server selects the second photo by moving forward through upload order and wrapping if necessary. `X-Photo-Id` identifies the selected photo on the left. If there is no second portrait photo, the body contains only the selected photo with its configured fit.
+
 An empty library returns `204`, with `X-Display-Seconds` and no body. The frame keeps its image and uses this time before its next request. A failed request also leaves the image intact. The frame advances its local cursor only after it receives a complete valid image.
 
 Each frame keeps its own cursor. Preview requests do not advance the physical frame.

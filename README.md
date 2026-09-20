@@ -28,9 +28,11 @@ On Debian or Ubuntu, the command is provided by the `libheif-examples` package. 
 - **Whole photo:** preserve the complete photo; use black borders as needed.
 - **Fill screen:** crop the edges to fill the screen.
 
+When the selected photo is in portrait orientation, the companion finds the next portrait photo in upload order. It places both photos side by side with a two-pixel white divider. If there is no other portrait photo, it shows the selected photo by itself. Landscape photos use the previous layout.
+
 Set the photo time and play order, then select **Save settings**. Click a photo to preview it. The preview does not change the photo currently on the physical frame. The frame gets settings on its next request. When paused, touch its center to resume, or its left or right side to request a photo.
 
-The app stores originals, previews, prepared images, and settings in `photos.sqlite`. Each photo needs about 2.46 MB for its two pixel images, plus its original and JPEG previews. Stop the app before you copy the data directory for a backup. Keep the whole directory, including any SQLite WAL files. Run one app process for this library.
+The app stores originals, previews, prepared images, and settings in `photos.sqlite`. Each photo needs about 2.46 MB for its two full-frame pixel images, plus its original and JPEG previews. Portrait photos need about 1.23 MB more for the two side-by-side layouts. Stop the app before you copy the data directory for a backup. Keep the whole directory, including any SQLite WAL files. Run one app process for this library.
 
 The web app is for a trusted home network. Anyone with access to its address can view and manage the library. Do not expose it to the public internet. `FRAME_TOKEN` can restrict the frame endpoint; it does not protect the web interface. Traffic uses local HTTP.
 
