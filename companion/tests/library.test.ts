@@ -68,7 +68,7 @@ describe('library', () => {
     expect(lib.next(a.id, null)?.id).toBe(b.id);
     expect(lib.next(b.id, null)?.id).toBe(b.id);
   });
-  test('portrait photos use the next portrait partner and a two-pixel white divider', async () => {
+  test('portrait photos use the next portrait partner and a two-pixel black divider', async () => {
     const lib = library();
     const red = await lib.add('red.png', await solid(100, 200, '#ff0000'));
     const landscape = await lib.add('green.png', await solid(200, 100, '#00ff00'));
@@ -78,7 +78,7 @@ describe('library', () => {
     expect(paired?.length).toBe(FRAME_BYTES);
     const pixel = (x: number, y = HEIGHT / 2) => paired!.readUInt16LE((y * WIDTH + x) * 2);
     expect(pixel(Math.floor(PORTRAIT_WIDTH / 2))).toBe(0xf800);
-    for (let x = PORTRAIT_WIDTH; x < PORTRAIT_WIDTH + DIVIDER_WIDTH; x++) expect(pixel(x)).toBe(0xffff);
+    for (let x = PORTRAIT_WIDTH; x < PORTRAIT_WIDTH + DIVIDER_WIDTH; x++) expect(pixel(x)).toBe(0x0000);
     expect(pixel(PORTRAIT_WIDTH + DIVIDER_WIDTH + Math.floor(PORTRAIT_WIDTH / 2))).toBe(0x001f);
     expect(await lib.frame(landscape.id, 'contain')).toEqual(lib.image(landscape.id, 'contain', false));
   });
@@ -94,7 +94,7 @@ describe('library', () => {
     await lib.add('blue.png', await solid(100, 200, '#0000ff'));
     lib.db.query('UPDATE photos SET portrait=NULL,pair_contain=NULL,pair_cover=NULL WHERE id=?').run(red.id);
     const paired = await lib.frame(red.id, 'contain');
-    expect(paired?.readUInt16LE((PORTRAIT_WIDTH * 2))).toBe(0xffff);
+    expect(paired?.readUInt16LE((PORTRAIT_WIDTH * 2))).toBe(0x0000);
     expect((lib.db.query('SELECT portrait FROM photos WHERE id=?').get(red.id) as { portrait: number }).portrait).toBe(1);
   });
   test('opening the previous database schema adds portrait columns', () => {

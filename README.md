@@ -28,7 +28,7 @@ On Debian or Ubuntu, the command is provided by the `libheif-examples` package. 
 - **Whole photo:** preserve the complete photo; use black borders as needed.
 - **Fill screen:** crop the edges to fill the screen.
 
-When the selected photo is in portrait orientation, the companion finds the next portrait photo in upload order. It places both photos side by side with a two-pixel white divider. If there is no other portrait photo, it shows the selected photo by itself. Landscape photos use the previous layout.
+When the selected photo is in portrait orientation, the companion finds the next portrait photo in upload order. It places both photos side by side with a two-pixel black divider. If there is no other portrait photo, it shows the selected photo by itself. Landscape photos use the previous layout.
 
 Set the photo time, crossfade time, and play order, then select **Save settings**. The crossfade defaults to two seconds; set it to zero to switch images immediately. Click a photo to preview it. The preview does not change the photo currently on the physical frame. The frame gets settings on its next request. When paused, touch its center to resume, or its left or right side to request a photo.
 

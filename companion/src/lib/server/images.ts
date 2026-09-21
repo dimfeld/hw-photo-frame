@@ -97,8 +97,8 @@ export function combinePortraits(left: Buffer, right: Buffer): Buffer {
     const sourceOffset = row * rowBytes;
     const targetOffset = row * WIDTH * 2;
     left.copy(result, targetOffset, sourceOffset, sourceOffset + rowBytes);
-    result.writeUInt16LE(0xffff, targetOffset + rowBytes);
-    result.writeUInt16LE(0xffff, targetOffset + rowBytes + 2);
+    result.writeUInt16LE(0x0000, targetOffset + rowBytes);
+    result.writeUInt16LE(0x0000, targetOffset + rowBytes + 2);
     right.copy(result, targetOffset + rowBytes + DIVIDER_WIDTH * 2, sourceOffset, sourceOffset + rowBytes);
   }
   return result;
