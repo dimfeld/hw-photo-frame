@@ -155,6 +155,7 @@ void board_show_status(const char *text) {
 }
 
 static bool decode_jpeg(const uint8_t *jpeg, size_t length, uint8_t *output) {
+    const int64_t started = esp_timer_get_time();
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     jpeg_dec_handle_t decoder = nullptr;
@@ -173,10 +174,13 @@ static bool decode_jpeg(const uint8_t *jpeg, size_t length, uint8_t *output) {
         success = jpeg_dec_process(decoder, &io) == JPEG_ERR_OK;
     }
     jpeg_dec_close(decoder);
+    ESP_LOGI(TAG, "JPEG timing: full decode=%lld ms bytes=%u success=%d",
+        (esp_timer_get_time() - started) / 1000, static_cast<unsigned>(length), success);
     return success;
 }
 
 static bool decode_reduced_jpeg(const uint8_t *jpeg, size_t length, uint16_t *output) {
+    const int64_t started = esp_timer_get_time();
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     config.block_enable = true;
@@ -214,7 +218,10 @@ static bool decode_reduced_jpeg(const uint8_t *jpeg, size_t length, uint16_t *ou
         }
     }
     jpeg_dec_close(decoder);
-    return success && output_row == FADE_HEIGHT;
+    success = success && output_row == FADE_HEIGHT;
+    ESP_LOGI(TAG, "JPEG timing: reduced decode=%lld ms bytes=%u rows=%d success=%d",
+        (esp_timer_get_time() - started) / 1000, static_cast<unsigned>(length), output_row, success);
+    return success;
 }
 
 bool board_show_jpeg(const uint8_t *jpeg, size_t length) {
@@ -235,11 +242,18 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
         1000000LL * (WIDTH + 162 + 152 + 48) * (HEIGHT + 45 + 13 + 3) / 30000000;
     // RGB565 green has 64 levels, so more than 64 blend steps cannot add color precision.
     const int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
+    const int64_t preparation_started = esp_timer_get_time();
     const bool reduced_fade = reduced_from && reduced_target && steps > 1
         && decode_reduced_jpeg(from, from_length, reduced_from)
         && decode_reduced_jpeg(target, target_length, reduced_target);
+    ESP_LOGI(TAG, "JPEG timing: fade preparation=%lld ms steps=%d success=%d",
+        (esp_timer_get_time() - preparation_started) / 1000, steps, reduced_fade);
     if (!reduced_fade) return board_show_jpeg(target, target_length);
     const int64_t started = esp_timer_get_time();
+    int presented = 0;
+    int skipped = 0;
+    int64_t blend_total = 0;
+    int64_t blend_max = 0;
     for (int step = 1; step < steps;) {
         const int64_t scheduled = (duration_us / steps) * step + (duration_us % steps) * step / steps;
         wait_until(started + scheduled);
@@ -255,14 +269,23 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
                 (duration_us / steps) * next + (duration_us % steps) * next / steps;
             if (next_scheduled > elapsed) break;
             step = next;
+            ++skipped;
         }
         const int alpha = step * 256 / steps;
         const int inverse = 256 - alpha;
+        const int64_t blend_started = esp_timer_get_time();
         blend_reduced_frame(static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
+        const int64_t blend_time = esp_timer_get_time() - blend_started;
+        blend_total += blend_time;
+        blend_max = std::max(blend_max, blend_time);
         present_frame();
+        ++presented;
         ++step;
     }
     wait_until(started + duration_us);
+    ESP_LOGI(TAG, "JPEG timing: fade render=%lld ms presented=%d skipped=%d blend_avg=%lld ms blend_max=%lld ms",
+        (esp_timer_get_time() - started) / 1000, presented, skipped,
+        presented ? blend_total / presented / 1000 : 0, blend_max / 1000);
     return board_show_jpeg(target, target_length);
 }
 

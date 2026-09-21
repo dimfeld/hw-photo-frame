@@ -91,6 +91,7 @@ static void free_jpeg(JpegImage &image) {
     image = {};
 }
 static bool fetch_photo(JpegImage &image, const std::string &after, bool previous, Reply &reply) {
+    const int64_t started = esp_timer_get_time();
     const std::string url = std::string(FRAME_SERVER_URL) + "/frame/next.jpeg?after=" + after
         + (previous ? "&direction=previous" : "");
     esp_http_client_config_t config = {};
@@ -106,8 +107,11 @@ static bool fetch_photo(JpegImage &image, const std::string &after, bool previou
         esp_http_client_set_header(client, "Authorization", auth.c_str());
     }
     bool complete = false;
+    int64_t headers_received = started;
+    int64_t body_received = started;
     if (esp_http_client_open(client, 0) == ESP_OK) {
         const int64_t length = esp_http_client_fetch_headers(client);
+        headers_received = esp_timer_get_time();
         const int status = esp_http_client_get_status_code(client);
         if (status == 200 && length > 0 && length <= INT_MAX && valid_id(reply.id)
             && reply.format == "jpeg-baseline-1024x600" && reply.seconds >= 0) {
@@ -123,6 +127,7 @@ static bool fetch_photo(JpegImage &image, const std::string &after, bool previou
                 if (count <= 0) break;
                 received += count;
             }
+            body_received = esp_timer_get_time();
             complete = pixels && received == static_cast<size_t>(length)
                 && esp_http_client_is_complete_data_received(client);
             if (complete) {
@@ -138,6 +143,9 @@ static bool fetch_photo(JpegImage &image, const std::string &after, bool previou
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "JPEG timing: fetch headers=%lld ms body=%lld ms total=%lld ms bytes=%u",
+        (headers_received - started) / 1000, (body_received - headers_received) / 1000,
+        (esp_timer_get_time() - started) / 1000, static_cast<unsigned>(image.length));
     return complete;
 }
 extern "C" void app_main() {
