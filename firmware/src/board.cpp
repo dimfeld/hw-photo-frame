@@ -30,9 +30,6 @@ static constexpr size_t FADE_BYTES = FADE_WIDTH * FADE_HEIGHT * sizeof(uint16_t)
 alignas(16) static uint16_t blended_rows[2][FADE_WIDTH];
 alignas(16) static uint16_t horizontal_top[FADE_WIDTH];
 alignas(16) static uint16_t decoded_block[WIDTH * 16];
-static int64_t last_row_blend_us;
-static int64_t last_expand_us;
-static int64_t last_copy_us;
 
 extern "C" void blend_rgb565_simd(uint16_t *output, const uint16_t *from,
     const uint16_t *target, size_t pixels, uint16_t alpha, uint16_t inverse);
@@ -82,24 +79,16 @@ static uint16_t average_rgb565(uint16_t first, uint16_t second) {
 }
 
 static void blend_reduced_frame(uint16_t alpha, uint16_t inverse) {
-    last_row_blend_us = 0;
-    last_expand_us = 0;
-    last_copy_us = 0;
     uint16_t *top = blended_rows[0];
     uint16_t *bottom = blended_rows[1];
-    int64_t operation_started = esp_timer_get_time();
     blend_rgb565_simd(top, reduced_from, reduced_target, FADE_WIDTH, alpha, inverse);
-    last_row_blend_us += esp_timer_get_time() - operation_started;
     for (int y = 0; y < FADE_HEIGHT; ++y) {
-        operation_started = esp_timer_get_time();
         if (y + 1 < FADE_HEIGHT) {
             blend_rgb565_simd(bottom, reduced_from + (y + 1) * FADE_WIDTH,
                 reduced_target + (y + 1) * FADE_WIDTH, FADE_WIDTH, alpha, inverse);
         } else {
             memcpy(bottom, top, sizeof(blended_rows[0]));
         }
-        last_row_blend_us += esp_timer_get_time() - operation_started;
-        operation_started = esp_timer_get_time();
         auto *top_output = reinterpret_cast<uint32_t *>(
             frame_buffer + y * FADE_SCALE * WIDTH);
         auto *bottom_output = reinterpret_cast<uint32_t *>(
@@ -125,7 +114,6 @@ static void blend_reduced_frame(uint16_t alpha, uint16_t inverse) {
         const uint16_t last_bottom = average_rgb565(top[FADE_WIDTH - 1], bottom[FADE_WIDTH - 1]);
         bottom_output[FADE_WIDTH - 1] = static_cast<uint32_t>(last_bottom)
             | (static_cast<uint32_t>(last_bottom) << 16);
-        last_expand_us += esp_timer_get_time() - operation_started;
         std::swap(top, bottom);
     }
 }
@@ -276,9 +264,6 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
     int skipped = 0;
     int64_t blend_total = 0;
     int64_t blend_max = 0;
-    int64_t row_blend_total = 0;
-    int64_t expand_total = 0;
-    int64_t copy_total = 0;
     for (int step = 1; step < steps;) {
         const int64_t scheduled = (duration_us / steps) * step + (duration_us % steps) * step / steps;
         wait_until(started + scheduled);
@@ -303,9 +288,6 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
         const int64_t blend_time = esp_timer_get_time() - blend_started;
         blend_total += blend_time;
         blend_max = std::max(blend_max, blend_time);
-        row_blend_total += last_row_blend_us;
-        expand_total += last_expand_us;
-        copy_total += last_copy_us;
         present_frame();
         ++presented;
         ++step;
@@ -314,10 +296,6 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
     ESP_LOGI(TAG, "JPEG timing: fade render=%lld ms presented=%d skipped=%d blend_avg=%lld ms blend_max=%lld ms",
         (esp_timer_get_time() - started) / 1000, presented, skipped,
         presented ? blend_total / presented / 1000 : 0, blend_max / 1000);
-    ESP_LOGI(TAG, "JPEG timing: blend parts row=%lld ms expand=%lld ms copy=%lld ms",
-        presented ? row_blend_total / presented / 1000 : 0,
-        presented ? expand_total / presented / 1000 : 0,
-        presented ? copy_total / presented / 1000 : 0);
     return board_show_jpeg(target, target_length);
 }
 
