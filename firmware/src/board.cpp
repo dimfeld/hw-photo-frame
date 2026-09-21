@@ -9,13 +9,49 @@
 #include <cstring>
 
 static i2c_master_dev_handle_t touch;
+static esp_lcd_panel_handle_t lcd_panel;
+static uint16_t *display_buffers[2];
 static uint16_t *frame_buffer;
+static uint32_t completed_frames;
+static portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
+
+extern "C" void blend_rgb565_simd(uint16_t *output, const uint16_t *from,
+    const uint16_t *target, size_t pixels, uint16_t alpha, uint16_t inverse);
+static_assert((static_cast<size_t>(WIDTH) * HEIGHT) % 8 == 0,
+    "The SIMD blend kernel requires complete eight-pixel blocks");
 
 static void wait_until(int64_t due) {
     while (esp_timer_get_time() < due) {
         const int64_t ticks = (due - esp_timer_get_time()) / (1000000 / configTICK_RATE_HZ);
         vTaskDelay(static_cast<TickType_t>(std::max<int64_t>(1, std::min<int64_t>(ticks, portMAX_DELAY - 1))));
     }
+}
+
+static bool IRAM_ATTR frame_complete(esp_lcd_panel_handle_t,
+    const esp_lcd_rgb_panel_event_data_t *, void *) {
+    portENTER_CRITICAL_ISR(&frame_lock);
+    ++completed_frames;
+    portEXIT_CRITICAL_ISR(&frame_lock);
+    return false;
+}
+
+static void present_frame() {
+    portENTER_CRITICAL(&frame_lock);
+    const uint32_t previous_completed_frames = completed_frames;
+    const esp_err_t result = esp_lcd_panel_draw_bitmap(lcd_panel, 0, 0, WIDTH, HEIGHT, frame_buffer);
+    portEXIT_CRITICAL(&frame_lock);
+    ESP_ERROR_CHECK(result);
+
+    // The old front buffer is safe to reuse after the driver starts the new frame.
+    uint32_t current_completed_frames;
+    do {
+        portENTER_CRITICAL(&frame_lock);
+        current_completed_frames = completed_frames;
+        portEXIT_CRITICAL(&frame_lock);
+        if (current_completed_frames != previous_completed_frames) break;
+        vTaskDelay(1);
+    } while (true);
+    frame_buffer = frame_buffer == display_buffers[0] ? display_buffers[1] : display_buffers[0];
 }
 
 static const uint8_t FONT[26][5] = {
@@ -61,6 +97,7 @@ void board_show_status(const char *text) {
             }
         }
     }
+    present_frame();
 }
 
 void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int64_t duration_us) {
@@ -68,6 +105,7 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
     const auto *target = reinterpret_cast<const uint16_t *>(target_bytes);
     if (duration_us <= 0) {
         memcpy(frame_buffer, target, FRAME_BYTES);
+        present_frame();
         return;
     }
 
@@ -95,20 +133,14 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
         }
         const int alpha = step * 256 / steps;
         const int inverse = 256 - alpha;
-        for (size_t pixel = 0; pixel < static_cast<size_t>(WIDTH) * HEIGHT; ++pixel) {
-            const uint16_t old_pixel = from[pixel];
-            const uint16_t new_pixel = target[pixel];
-            const int red = ((old_pixel >> 11) * inverse + (new_pixel >> 11) * alpha + 128) >> 8;
-            const int green = (((old_pixel >> 5) & 0x3f) * inverse + ((new_pixel >> 5) & 0x3f) * alpha + 128) >> 8;
-            const int blue = ((old_pixel & 0x1f) * inverse + (new_pixel & 0x1f) * alpha + 128) >> 8;
-            frame_buffer[pixel] = static_cast<uint16_t>((red << 11) | (green << 5) | blue);
-        }
-        // Let the idle task run even when rendering takes longer than the interval.
-        vTaskDelay(1);
+        blend_rgb565_simd(frame_buffer, from, target, static_cast<size_t>(WIDTH) * HEIGHT,
+            static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
+        present_frame();
         ++step;
     }
     wait_until(started + duration_us);
     memcpy(frame_buffer, target, FRAME_BYTES);
+    present_frame();
 }
 
 // Pin map, timing, I/O registers, and reset delays follow Waveshare's 08_Touch example.
@@ -161,7 +193,7 @@ esp_lcd_panel_handle_t board_init() {
     cfg.data_width = 16;
     cfg.in_color_format = LCD_COLOR_FMT_RGB565;
     cfg.out_color_format = LCD_COLOR_FMT_RGB565;
-    cfg.num_fbs = 1;
+    cfg.num_fbs = 2;
     cfg.bounce_buffer_size_px = WIDTH * 10;
     cfg.hsync_gpio_num = GPIO_NUM_46;
     cfg.vsync_gpio_num = GPIO_NUM_3;
@@ -171,16 +203,22 @@ esp_lcd_panel_handle_t board_init() {
     const int pins[] = {14,38,18,17,10,39,0,45,48,47,21,1,2,42,41,40};
     memcpy(cfg.data_gpio_nums, pins, sizeof(pins));
     cfg.flags.fb_in_psram = true;
-    esp_lcd_panel_handle_t panel;
-    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&cfg, &panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-    void *fb;
-    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel, 1, &fb));
-    frame_buffer = static_cast<uint16_t *>(fb);
-    memset(frame_buffer, 0, FRAME_BYTES);
+    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&cfg, &lcd_panel));
+    esp_lcd_rgb_panel_event_callbacks_t callbacks = {};
+    callbacks.on_frame_buf_complete = frame_complete;
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(lcd_panel, &callbacks, nullptr));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(lcd_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(lcd_panel));
+    void *fb0;
+    void *fb1;
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(lcd_panel, 2, &fb0, &fb1));
+    display_buffers[0] = static_cast<uint16_t *>(fb0);
+    display_buffers[1] = static_cast<uint16_t *>(fb1);
+    memset(display_buffers[0], 0, FRAME_BYTES);
+    memset(display_buffers[1], 0, FRAME_BYTES);
+    frame_buffer = display_buffers[1];
     write_reg(io, 0x03, output | (1 << 2));
-    return panel;
+    return lcd_panel;
 }
 bool board_touch(uint16_t &x, bool &pressed) {
     uint8_t reg[] = {0x81, 0x4e};

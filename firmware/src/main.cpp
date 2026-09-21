@@ -124,8 +124,8 @@ extern "C" void app_main() {
     frame_task = xTaskGetCurrentTaskHandle();
     auto panel = board_init();
     board_show_status("CONNECTING TO WIFI");
-    auto current_pixels = static_cast<uint8_t *>(heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    auto download_pixels = static_cast<uint8_t *>(heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto current_pixels = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto download_pixels = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     ESP_ERROR_CHECK(current_pixels && download_pixels ? ESP_OK : ESP_ERR_NO_MEM);
     // Use the IDF main-task stack size for I2C calls and driver error logs.
     BaseType_t created = xTaskCreate(touch_task, "touch", CONFIG_ESP_MAIN_TASK_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &touch_task_handle);
