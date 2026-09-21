@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { randomInt, randomUUID } from 'node:crypto';
-import { combinePortraits, prepareBoth, preparePortrait, type Fit } from './images';
+import { combinePortraits, jpegFromRgb565, prepareBoth, preparePortrait, type Fit } from './images';
 export type Photo = { id: string; name: string; created: number };
 export type Settings = { seconds: number; crossfadeSeconds: number; fit: Fit; ordering: 'sequential' | 'random' };
 
@@ -83,6 +83,10 @@ export class Library {
       if (partner?.portrait && partner.bytes) return combinePortraits(primary.bytes, partner.bytes);
     }
     return full;
+  }
+  async jpegFrame(id: string, fit: Fit): Promise<Buffer | null> {
+    const pixels = await this.frame(id, fit);
+    return pixels ? jpegFromRgb565(pixels) : null;
   }
   next(after: string | null, direction: string | null): Photo | undefined {
     const photos = this.list();

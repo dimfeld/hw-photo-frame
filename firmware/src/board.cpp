@@ -2,6 +2,7 @@
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
+#include "esp_jpeg_dec.h"
 #include "esp_lcd_panel_rgb.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -17,7 +18,6 @@ static uint16_t *display_buffers[2];
 static uint16_t *frame_buffer;
 static uint16_t *reduced_from;
 static uint16_t *reduced_target;
-static const uint16_t *reduced_current_source;
 static uint32_t completed_frames;
 static portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -29,6 +29,7 @@ static constexpr int FADE_HEIGHT = HEIGHT / FADE_SCALE;
 static constexpr size_t FADE_BYTES = FADE_WIDTH * FADE_HEIGHT * sizeof(uint16_t);
 alignas(16) static uint16_t blended_rows[2][FADE_WIDTH];
 alignas(16) static uint16_t expanded_rows[2][WIDTH];
+alignas(16) static uint16_t decoded_block[WIDTH * 16];
 
 extern "C" void blend_rgb565_simd(uint16_t *output, const uint16_t *from,
     const uint16_t *target, size_t pixels, uint16_t alpha, uint16_t inverse);
@@ -75,20 +76,6 @@ static void present_frame() {
 
 static uint16_t average_rgb565(uint16_t first, uint16_t second) {
     return static_cast<uint16_t>((first & second) + (((first ^ second) & 0xf7de) >> 1));
-}
-
-static void reduce_fade_image(const uint16_t *source, uint16_t *destination) {
-    for (int y = 0; y < FADE_HEIGHT; ++y) {
-        const uint16_t *source_row_0 = source + y * FADE_SCALE * WIDTH;
-        const uint16_t *source_row_1 = source_row_0 + WIDTH;
-        uint16_t *destination_row = destination + y * FADE_WIDTH;
-        for (int x = 0; x < FADE_WIDTH; ++x) {
-            const int source_x = x * FADE_SCALE;
-            const uint16_t top = average_rgb565(source_row_0[source_x], source_row_0[source_x + 1]);
-            const uint16_t bottom = average_rgb565(source_row_1[source_x], source_row_1[source_x + 1]);
-            destination_row[x] = average_rgb565(top, bottom);
-        }
-    }
 }
 
 static void blend_reduced_frame(uint16_t alpha, uint16_t inverse) {
@@ -167,28 +154,91 @@ void board_show_status(const char *text) {
     present_frame();
 }
 
-void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int64_t duration_us) {
-    const auto *from = reinterpret_cast<const uint16_t *>(from_bytes);
-    const auto *target = reinterpret_cast<const uint16_t *>(target_bytes);
-    if (duration_us <= 0) {
-        memcpy(frame_buffer, target, FRAME_BYTES);
-        present_frame();
-        reduced_current_source = nullptr;
-        return;
+static bool decode_jpeg(const uint8_t *jpeg, size_t length, uint8_t *output) {
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    jpeg_dec_handle_t decoder = nullptr;
+    if (jpeg_dec_open(&config, &decoder) != JPEG_ERR_OK) return false;
+    jpeg_dec_io_t io = {};
+    jpeg_dec_header_info_t info = {};
+    io.inbuf = const_cast<uint8_t *>(jpeg);
+    io.inbuf_len = static_cast<int>(length);
+    bool success = jpeg_dec_parse_header(decoder, &io, &info) == JPEG_ERR_OK
+        && info.width == WIDTH && info.height == HEIGHT;
+    int output_length = 0;
+    success = success && jpeg_dec_get_outbuf_len(decoder, &output_length) == JPEG_ERR_OK
+        && output_length == FRAME_BYTES;
+    if (success) {
+        io.outbuf = output;
+        success = jpeg_dec_process(decoder, &io) == JPEG_ERR_OK;
     }
+    jpeg_dec_close(decoder);
+    return success;
+}
+
+static bool decode_reduced_jpeg(const uint8_t *jpeg, size_t length, uint16_t *output) {
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    config.block_enable = true;
+    jpeg_dec_handle_t decoder = nullptr;
+    if (jpeg_dec_open(&config, &decoder) != JPEG_ERR_OK) return false;
+    jpeg_dec_io_t io = {};
+    jpeg_dec_header_info_t info = {};
+    io.inbuf = const_cast<uint8_t *>(jpeg);
+    io.inbuf_len = static_cast<int>(length);
+    bool success = jpeg_dec_parse_header(decoder, &io, &info) == JPEG_ERR_OK
+        && info.width == WIDTH && info.height == HEIGHT;
+    int block_length = 0;
+    int process_count = 0;
+    success = success && jpeg_dec_get_outbuf_len(decoder, &block_length) == JPEG_ERR_OK
+        && block_length > 0 && static_cast<size_t>(block_length) <= sizeof(decoded_block)
+        && jpeg_dec_get_process_count(decoder, &process_count) == JPEG_ERR_OK
+        && process_count > 0;
+    io.outbuf = reinterpret_cast<uint8_t *>(decoded_block);
+    int output_row = 0;
+    for (int block = 0; success && block < process_count; ++block) {
+        success = jpeg_dec_process(decoder, &io) == JPEG_ERR_OK
+            && io.out_size > 0 && io.out_size % (WIDTH * sizeof(uint16_t)) == 0;
+        const int rows = success ? io.out_size / (WIDTH * sizeof(uint16_t)) : 0;
+        success = success && rows % 2 == 0 && output_row + rows / 2 <= FADE_HEIGHT;
+        for (int y = 0; success && y < rows; y += 2, ++output_row) {
+            const uint16_t *top = decoded_block + y * WIDTH;
+            const uint16_t *bottom = top + WIDTH;
+            uint16_t *destination = output + output_row * FADE_WIDTH;
+            for (int x = 0; x < FADE_WIDTH; ++x) {
+                const int source_x = x * 2;
+                destination[x] = average_rgb565(
+                    average_rgb565(top[source_x], top[source_x + 1]),
+                    average_rgb565(bottom[source_x], bottom[source_x + 1]));
+            }
+        }
+    }
+    jpeg_dec_close(decoder);
+    return success && output_row == FADE_HEIGHT;
+}
+
+bool board_show_jpeg(const uint8_t *jpeg, size_t length) {
+    if (!decode_jpeg(jpeg, length, reinterpret_cast<uint8_t *>(frame_buffer))) {
+        ESP_LOGE(TAG, "JPEG decode failed");
+        return false;
+    }
+    present_frame();
+    return true;
+}
+
+bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
+    const uint8_t *target, size_t target_length, int64_t duration_us) {
+    if (duration_us <= 0) return board_show_jpeg(target, target_length);
 
     // This period comes from the configured 30 MHz pixel clock and panel timings.
     constexpr int64_t frame_period_us =
         1000000LL * (WIDTH + 162 + 152 + 48) * (HEIGHT + 45 + 13 + 3) / 30000000;
     // RGB565 green has 64 levels, so more than 64 blend steps cannot add color precision.
     const int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
-    const bool reduced_fade = reduced_from && reduced_target && steps > 1;
-    if (reduced_fade) {
-        if (reduced_current_source != from) {
-            reduce_fade_image(from, reduced_from);
-        }
-        reduce_fade_image(target, reduced_target);
-    }
+    const bool reduced_fade = reduced_from && reduced_target && steps > 1
+        && decode_reduced_jpeg(from, from_length, reduced_from)
+        && decode_reduced_jpeg(target, target_length, reduced_target);
+    if (!reduced_fade) return board_show_jpeg(target, target_length);
     const int64_t started = esp_timer_get_time();
     for (int step = 1; step < steps;) {
         const int64_t scheduled = (duration_us / steps) * step + (duration_us % steps) * step / steps;
@@ -208,24 +258,12 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
         }
         const int alpha = step * 256 / steps;
         const int inverse = 256 - alpha;
-        if (reduced_fade) {
-            blend_reduced_frame(static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
-        } else {
-            blend_rgb565_simd(frame_buffer, from, target, static_cast<size_t>(WIDTH) * HEIGHT,
-                static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
-        }
+        blend_reduced_frame(static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
         present_frame();
         ++step;
     }
     wait_until(started + duration_us);
-    memcpy(frame_buffer, target, FRAME_BYTES);
-    present_frame();
-    if (reduced_fade) {
-        reduced_current_source = target;
-        std::swap(reduced_from, reduced_target);
-    } else if (reduced_from && reduced_target) {
-        reduced_current_source = nullptr;
-    }
+    return board_show_jpeg(target, target_length);
 }
 
 // Pin map, timing, I/O registers, and reset delays follow Waveshare's 08_Touch example.

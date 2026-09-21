@@ -82,8 +82,16 @@ static bool valid_id(const std::string &id) {
     // The server uses UUIDs (36 ASCII characters).
     return id.size() == 36 && id.find_first_not_of("0123456789abcdef-") == std::string::npos;
 }
-static bool fetch_photo(uint8_t *pixels, const std::string &after, bool previous, Reply &reply) {
-    const std::string url = std::string(FRAME_SERVER_URL) + "/frame/next.rgb565?after=" + after
+struct JpegImage {
+    uint8_t *bytes = nullptr;
+    size_t length = 0;
+};
+static void free_jpeg(JpegImage &image) {
+    heap_caps_free(image.bytes);
+    image = {};
+}
+static bool fetch_photo(JpegImage &image, const std::string &after, bool previous, Reply &reply) {
+    const std::string url = std::string(FRAME_SERVER_URL) + "/frame/next.jpeg?after=" + after
         + (previous ? "&direction=previous" : "");
     esp_http_client_config_t config = {};
     config.url = url.c_str();
@@ -101,15 +109,28 @@ static bool fetch_photo(uint8_t *pixels, const std::string &after, bool previous
     if (esp_http_client_open(client, 0) == ESP_OK) {
         const int64_t length = esp_http_client_fetch_headers(client);
         const int status = esp_http_client_get_status_code(client);
-        if (status == 200 && length == FRAME_BYTES && valid_id(reply.id)
-            && reply.format == "rgb565le-1024x600" && reply.seconds >= 0) {
+        if (status == 200 && length > 0 && length <= INT_MAX && valid_id(reply.id)
+            && reply.format == "jpeg-baseline-1024x600" && reply.seconds >= 0) {
+            auto pixels = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+                16, static_cast<size_t>(length), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            if (!pixels) {
+                pixels = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+                    16, static_cast<size_t>(length), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+            }
             size_t received = 0;
-            while (received < FRAME_BYTES) {
-                const int count = esp_http_client_read(client, reinterpret_cast<char *>(pixels + received), FRAME_BYTES - received);
+            while (pixels && received < static_cast<size_t>(length)) {
+                const int count = esp_http_client_read(client, reinterpret_cast<char *>(pixels + received), length - received);
                 if (count <= 0) break;
                 received += count;
             }
-            complete = received == FRAME_BYTES && esp_http_client_is_complete_data_received(client);
+            complete = pixels && received == static_cast<size_t>(length)
+                && esp_http_client_is_complete_data_received(client);
+            if (complete) {
+                image.bytes = pixels;
+                image.length = received;
+            } else {
+                heap_caps_free(pixels);
+            }
         }
         if (!complete) ESP_LOGW(TAG, "No complete photo received (HTTP %d); keeping current photo", status);
         // Only a valid image or the empty-library reply can change the retry time.
@@ -122,11 +143,8 @@ static bool fetch_photo(uint8_t *pixels, const std::string &after, bool previous
 extern "C" void app_main() {
     ESP_LOGI(TAG, "Starting photo frame");
     frame_task = xTaskGetCurrentTaskHandle();
-    auto panel = board_init();
+    board_init();
     board_show_status("CONNECTING TO WIFI");
-    auto current_pixels = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    auto download_pixels = static_cast<uint8_t *>(heap_caps_aligned_alloc(16, FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    ESP_ERROR_CHECK(current_pixels && download_pixels ? ESP_OK : ESP_ERR_NO_MEM);
     // Use the IDF main-task stack size for I2C calls and driver error logs.
     BaseType_t created = xTaskCreate(touch_task, "touch", CONFIG_ESP_MAIN_TASK_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &touch_task_handle);
     configASSERT(created == pdPASS);
@@ -156,6 +174,7 @@ extern "C" void app_main() {
     int64_t due = 0;
     bool paused = false;
     std::string current;
+    JpegImage current_image;
     bool has_photo = false;
     for (;;) {
         TickType_t wait = portMAX_DELAY;
@@ -174,18 +193,28 @@ extern "C" void app_main() {
         const bool manual = action & (NEXT | PREVIOUS);
         if (!manual && (paused || (!(action & CONNECTED) && (seconds == 0 || esp_timer_get_time() < due)))) continue;
         Reply reply;
-        if (fetch_photo(download_pixels, current, action & PREVIOUS, reply)) {
+        JpegImage next_image;
+        if (fetch_photo(next_image, current, action & PREVIOUS, reply)) {
             const int64_t fade = reply.crossfade_seconds >= 0 ? reply.crossfade_seconds : crossfade_seconds;
-            if (has_photo && memcmp(current_pixels, download_pixels, FRAME_BYTES) != 0) {
-                board_crossfade(current_pixels, download_pixels, fade * 1000000);
-            } else {
-                ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, 0, WIDTH, HEIGHT, download_pixels));
+            bool displayed = true;
+            if (!has_photo) {
+                displayed = board_show_jpeg(next_image.bytes, next_image.length);
+            } else if (current != reply.id) {
+                displayed = board_crossfade_jpegs(current_image.bytes, current_image.length,
+                    next_image.bytes, next_image.length, fade * 1000000);
             }
-            std::swap(current_pixels, download_pixels);
-            current = reply.id;
-            has_photo = true;
-            ESP_LOGI(TAG, "Photo displayed: %s", current.c_str());
+            if (displayed) {
+                free_jpeg(current_image);
+                current_image = next_image;
+                next_image = {};
+                current = reply.id;
+                has_photo = true;
+                ESP_LOGI(TAG, "Photo displayed: %s (%u-byte JPEG in %s)", current.c_str(),
+                    static_cast<unsigned>(current_image.length),
+                    esp_ptr_internal(current_image.bytes) ? "internal SRAM" : "PSRAM");
+            }
         }
+        free_jpeg(next_image);
         if (reply.seconds >= 0) seconds = reply.seconds;
         if (reply.crossfade_seconds >= 0) crossfade_seconds = reply.crossfade_seconds;
         due = esp_timer_get_time() + seconds * 1000000;

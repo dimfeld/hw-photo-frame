@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { Library } from '../src/lib/server/library';
-import { prepare, DIVIDER_WIDTH, FRAME_BYTES, HEIGHT, isHeif, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
+import { jpegFromRgb565, prepare, DIVIDER_WIDTH, FRAME_BYTES, HEIGHT, isHeif, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
 const libraries: Library[] = [];
 afterEach(() => { for (const lib of libraries.splice(0)) lib.db.close(); });
 function library(path = ':memory:') { const lib = new Library(path); libraries.push(lib); return lib; }
@@ -41,6 +41,14 @@ describe('image contract', () => {
     // Rotated portrait is 300 pixels wide, centered at x=362..661.
     expect(result.pixels.readUInt16LE((WIDTH * 300 + 200) * 2)).toBe(0);
     expect(result.pixels.readUInt16LE((WIDTH * 300 + 512) * 2)).not.toBe(0);
+  });
+  test('RGB565 frames become baseline panel-sized JPEG images', async () => {
+    const pixels = Buffer.alloc(FRAME_BYTES);
+    pixels.fill(Buffer.from([0x00, 0xf8]));
+    const jpeg = await jpegFromRgb565(pixels);
+    const metadata = await sharp(jpeg).metadata();
+    expect([metadata.width, metadata.height, metadata.format, metadata.isProgressive])
+      .toEqual([WIDTH, HEIGHT, 'jpeg', false]);
   });
 });
 
@@ -87,6 +95,13 @@ describe('library', () => {
     const red = await lib.add('red.png', await photo());
     await lib.add('green.png', await solid(200, 100, '#00ff00'));
     expect(await lib.frame(red.id, 'cover')).toEqual(lib.image(red.id, 'cover', false));
+  });
+  test('JPEG frames include the composed display frame', async () => {
+    const lib = library();
+    const red = await lib.add('red.png', await solid(200, 100, '#ff0000'));
+    const jpeg = await lib.jpegFrame(red.id, 'cover');
+    const metadata = await sharp(jpeg!).metadata();
+    expect([metadata.width, metadata.height, metadata.format]).toEqual([WIDTH, HEIGHT, 'jpeg']);
   });
   test('portrait data is rebuilt lazily for photos from an older database', async () => {
     const lib = library();

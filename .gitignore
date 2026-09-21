@@ -6,6 +6,7 @@ data/
 .env.*
 !.env.example
 .pio/
+firmware/managed_components/
 sdkconfig.*
 !sdkconfig.defaults
 firmware/include/secrets.h

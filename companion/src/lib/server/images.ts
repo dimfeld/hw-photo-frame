@@ -49,6 +49,23 @@ export function rgb565(rgb: Uint8Array): Buffer {
   return result;
 }
 
+export async function jpegFromRgb565(pixels: Uint8Array): Promise<Buffer> {
+  if (pixels.length !== FRAME_BYTES) throw new Error('Wrong RGB565 image size');
+  const rgb = Buffer.alloc(WIDTH * HEIGHT * 3);
+  for (let src = 0, dst = 0; src < pixels.length; src += 2, dst += 3) {
+    const pixel = pixels[src] | (pixels[src + 1] << 8);
+    const red = (pixel >> 11) & 0x1f;
+    const green = (pixel >> 5) & 0x3f;
+    const blue = pixel & 0x1f;
+    rgb[dst] = (red << 3) | (red >> 2);
+    rgb[dst + 1] = (green << 2) | (green >> 4);
+    rgb[dst + 2] = (blue << 3) | (blue >> 2);
+  }
+  return sharp(rgb, { raw: { width: WIDTH, height: HEIGHT, channels: 3 } })
+    .jpeg({ progressive: false })
+    .toBuffer();
+}
+
 async function prepareDecoded(original: Buffer, fit: Fit) {
   // Sharp applies EXIF orientation before it fits the photo to the panel.
   const pixels = await sharp(original, { failOn: 'error' }).rotate()
