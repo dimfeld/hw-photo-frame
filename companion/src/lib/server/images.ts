@@ -10,10 +10,14 @@ const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heis', 'hevm', 'he
 
 export const WIDTH = 1024;
 export const HEIGHT = 600;
-export const FRAME_BYTES = WIDTH * HEIGHT * 2;
 export const DIVIDER_WIDTH = 2;
 export const PORTRAIT_WIDTH = (WIDTH - DIVIDER_WIDTH) / 2;
 export type Fit = 'contain' | 'cover';
+
+export function isJpeg(input: Uint8Array): boolean {
+  return input.length >= 4 && input[0] === 0xff && input[1] === 0xd8
+    && input[input.length - 2] === 0xff && input[input.length - 1] === 0xd9;
+}
 
 export function isHeif(input: Uint8Array): boolean {
   if (input.length < 12 || Buffer.from(input.subarray(4, 8)).toString('ascii') !== 'ftyp') return false;
@@ -39,40 +43,12 @@ async function decodeHeif(input: Buffer): Promise<Buffer> {
   }
 }
 
-export function rgb565(rgb: Uint8Array): Buffer {
-  if (rgb.length !== WIDTH * HEIGHT * 3) throw new Error('Wrong RGB image size');
-  const result = Buffer.alloc(FRAME_BYTES);
-  for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 2) {
-    const pixel = ((rgb[src] >> 3) << 11) | ((rgb[src + 1] >> 2) << 5) | (rgb[src + 2] >> 3);
-    result.writeUInt16LE(pixel, dst);
-  }
-  return result;
-}
-
-export async function jpegFromRgb565(pixels: Uint8Array): Promise<Buffer> {
-  if (pixels.length !== FRAME_BYTES) throw new Error('Wrong RGB565 image size');
-  const rgb = Buffer.alloc(WIDTH * HEIGHT * 3);
-  for (let src = 0, dst = 0; src < pixels.length; src += 2, dst += 3) {
-    const pixel = pixels[src] | (pixels[src + 1] << 8);
-    const red = (pixel >> 11) & 0x1f;
-    const green = (pixel >> 5) & 0x3f;
-    const blue = pixel & 0x1f;
-    rgb[dst] = (red << 3) | (red >> 2);
-    rgb[dst + 1] = (green << 2) | (green >> 4);
-    rgb[dst + 2] = (blue << 3) | (blue >> 2);
-  }
-  return sharp(rgb, { raw: { width: WIDTH, height: HEIGHT, channels: 3 } })
-    .jpeg({ progressive: false })
-    .toBuffer();
-}
-
 async function prepareDecoded(original: Buffer, fit: Fit) {
   // Sharp applies EXIF orientation before it fits the photo to the panel.
-  const pixels = await sharp(original, { failOn: 'error' }).rotate()
+  return sharp(original, { failOn: 'error' }).rotate()
     .resize(WIDTH, HEIGHT, { fit, background: '#000000' })
-    .flatten({ background: '#000000' }).toColourspace('srgb').removeAlpha().raw().toBuffer();
-  const preview = await sharp(pixels, { raw: { width: WIDTH, height: HEIGHT, channels: 3 } }).jpeg().toBuffer();
-  return { pixels: rgb565(pixels), preview };
+    .flatten({ background: '#000000' }).toColourspace('srgb').removeAlpha()
+    .jpeg({ progressive: false }).toBuffer();
 }
 
 function isPortrait(metadata: Metadata): boolean {
@@ -85,48 +61,26 @@ async function preparePortraitDecoded(decoded: Buffer) {
   const metadata = await sharp(decoded, { failOn: 'error' }).metadata();
   if (!isPortrait(metadata)) return { portrait: false as const, pairContain: null, pairCover: null };
   const slot = async (fit: Fit) => {
-    const pixels = await sharp(decoded, { failOn: 'error' }).rotate()
+    return sharp(decoded, { failOn: 'error' }).rotate()
       .resize(PORTRAIT_WIDTH, HEIGHT, { fit, background: '#000000' })
-      .flatten({ background: '#000000' }).toColourspace('srgb').removeAlpha().raw().toBuffer();
-    return rgb565Slot(pixels);
+      .flatten({ background: '#000000' }).toColourspace('srgb').removeAlpha()
+      .jpeg({ progressive: false }).toBuffer();
   };
   const [pairContain, pairCover] = await Promise.all([slot('contain'), slot('cover')]);
   return { portrait: true as const, pairContain, pairCover };
 }
 
-function rgb565Slot(rgb: Uint8Array): Buffer {
-  if (rgb.length !== PORTRAIT_WIDTH * HEIGHT * 3) throw new Error('Wrong portrait image size');
-  const result = Buffer.alloc(PORTRAIT_WIDTH * HEIGHT * 2);
-  for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 2) {
-    const pixel = ((rgb[src] >> 3) << 11) | ((rgb[src + 1] >> 2) << 5) | (rgb[src + 2] >> 3);
-    result.writeUInt16LE(pixel, dst);
-  }
-  return result;
-}
-
-export function combinePortraits(left: Buffer, right: Buffer): Buffer {
-  const rowBytes = PORTRAIT_WIDTH * 2;
-  if (left.length !== rowBytes * HEIGHT || right.length !== rowBytes * HEIGHT) {
-    throw new Error('Wrong portrait image size');
-  }
-  const result = Buffer.alloc(FRAME_BYTES);
-  for (let row = 0; row < HEIGHT; row++) {
-    const sourceOffset = row * rowBytes;
-    const targetOffset = row * WIDTH * 2;
-    left.copy(result, targetOffset, sourceOffset, sourceOffset + rowBytes);
-    result.writeUInt16LE(0x0000, targetOffset + rowBytes);
-    result.writeUInt16LE(0x0000, targetOffset + rowBytes + 2);
-    right.copy(result, targetOffset + rowBytes + DIVIDER_WIDTH * 2, sourceOffset, sourceOffset + rowBytes);
-  }
-  return result;
+export async function combinePortraits(left: Buffer, right: Buffer): Promise<Buffer> {
+  return sharp({ create: { width: WIDTH, height: HEIGHT, channels: 3, background: '#000000' } })
+    .composite([
+      { input: left, left: 0, top: 0 },
+      { input: right, left: PORTRAIT_WIDTH + DIVIDER_WIDTH, top: 0 }
+    ])
+    .jpeg({ progressive: false }).toBuffer();
 }
 
 export async function prepare(original: Buffer, fit: Fit) {
   return prepareDecoded(await decodeHeif(original), fit);
-}
-
-export async function preparePortrait(original: Buffer) {
-  return preparePortraitDecoded(await decodeHeif(original));
 }
 
 export async function prepareBoth(original: Buffer) {

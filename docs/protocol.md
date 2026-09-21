@@ -1,6 +1,6 @@
 # Frame protocol
 
-`GET /frame/next.rgb565?after=<photo UUID>&direction=previous`
+`GET /frame/next.jpeg?after=<photo UUID>&direction=previous`
 
 Both query parameters are optional. Without `after`, the server selects the first photo in upload order, or a random photo if random play is enabled. An unknown or removed cursor starts at the first photo in sequential mode. `direction=previous` steps back in upload order and wraps. In random mode, the next choice excludes the current photo unless the library has only one photo.
 
@@ -10,15 +10,15 @@ A photo response has status `200` and these headers:
 
 | Header | Value |
 | --- | --- |
-| Content-Type | application/octet-stream |
-| Content-Length | 1228800 |
-| X-Frame-Format | rgb565le-1024x600 |
+| Content-Type | image/jpeg |
+| Content-Length | Encoded JPEG byte length |
+| X-Frame-Format | jpeg-baseline-1024x600 |
 | X-Photo-Id | UUID of the selected photo |
 | X-Display-Seconds | Saved photo time, default 10 |
 | X-Crossfade-Seconds | Saved crossfade time, default 2; zero disables the fade |
 | Cache-Control | no-store |
 
-The body has 1024 × 600 pixels, in rows from top to bottom and left to right. Each pixel is an unsigned little-endian 16-bit value: red in bits 15–11, green in bits 10–5, and blue in bits 4–0. There is no file header or row padding.
+The body is a baseline 1024 × 600 JPEG image. The server stores prepared display images as JPEG data. Existing RGB565 database rows are rebuilt from their retained original image when the server first uses them.
 
 If the selected photo has portrait orientation and the library has another portrait photo, the body contains both photos in 511 × 600 areas. A two-pixel black divider separates them. The server selects the second photo by moving forward through upload order and wrapping if necessary. `X-Photo-Id` identifies the selected photo on the left. If there is no second portrait photo, the body contains only the selected photo with its configured fit.
 

@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { randomInt, randomUUID } from 'node:crypto';
-import { combinePortraits, jpegFromRgb565, prepareBoth, preparePortrait, type Fit } from './images';
+import { combinePortraits, isJpeg, prepareBoth, type Fit } from './images';
 export type Photo = { id: string; name: string; created: number };
 export type Settings = { seconds: number; crossfadeSeconds: number; fit: Fit; ordering: 'sequential' | 'random' };
 
@@ -48,30 +48,44 @@ export class Library {
     this.db.query(`INSERT INTO photos
       (id,name,created,original,contain,cover,preview_contain,preview_cover,portrait,pair_contain,pair_cover)
       VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(photo.id, photo.name, photo.created,
-      original, contain.pixels, cover.pixels, contain.preview, cover.preview,
+      original, contain, cover, contain, cover,
       portrait ? 1 : 0, pairContain, pairCover);
     return photo;
   }
   remove(id: string): boolean {
     return this.db.query('DELETE FROM photos WHERE id=?').run(id).changes > 0;
   }
-  image(id: string, fit: Fit, preview: boolean): Buffer | null {
-    const column = preview ? `preview_${fit}` : fit;
+  private async migrateFrame(id: string): Promise<boolean> {
+    const row = this.db.query(`SELECT original,contain,cover,portrait,pair_contain,pair_cover
+      FROM photos WHERE id=?`).get(id) as { original: Uint8Array; contain: Uint8Array; cover: Uint8Array;
+        portrait: number | null; pair_contain: Uint8Array | null; pair_cover: Uint8Array | null } | null;
+    if (!row) return false;
+    const pairsReady = row.portrait === 0 || (row.portrait === 1
+      && row.pair_contain !== null && isJpeg(row.pair_contain)
+      && row.pair_cover !== null && isJpeg(row.pair_cover));
+    if (isJpeg(row.contain) && isJpeg(row.cover) && pairsReady) return true;
+    const prepared = await prepareBoth(Buffer.from(row.original));
+    this.db.query(`UPDATE photos SET contain=?,cover=?,preview_contain=?,preview_cover=?,
+      portrait=?,pair_contain=?,pair_cover=? WHERE id=?`).run(
+      prepared.contain, prepared.cover, prepared.contain, prepared.cover,
+      prepared.portrait ? 1 : 0, prepared.pairContain, prepared.pairCover, id);
+    return true;
+  }
+  async image(id: string, fit: Fit): Promise<Buffer | null> {
+    if (!await this.migrateFrame(id)) return null;
+    const column = fit;
     const row = this.db.query(`SELECT ${column} AS bytes FROM photos WHERE id=?`).get(id) as { bytes: Uint8Array } | null;
     return row ? Buffer.from(row.bytes) : null;
   }
   private async portraitImage(id: string, fit: Fit): Promise<{ portrait: boolean; bytes: Buffer | null } | null> {
-    const row = this.db.query(`SELECT original,portrait,pair_${fit} AS bytes FROM photos WHERE id=?`).get(id) as
-      { original: Uint8Array; portrait: number | null; bytes: Uint8Array | null } | null;
+    if (!await this.migrateFrame(id)) return null;
+    const row = this.db.query(`SELECT portrait,pair_${fit} AS bytes FROM photos WHERE id=?`).get(id) as
+      { portrait: number; bytes: Uint8Array | null } | null;
     if (!row) return null;
-    if (row.portrait !== null) return { portrait: row.portrait === 1, bytes: row.bytes ? Buffer.from(row.bytes) : null };
-    const prepared = await preparePortrait(Buffer.from(row.original));
-    this.db.query('UPDATE photos SET portrait=?,pair_contain=?,pair_cover=? WHERE id=?').run(
-      prepared.portrait ? 1 : 0, prepared.pairContain, prepared.pairCover, id);
-    return { portrait: prepared.portrait, bytes: fit === 'contain' ? prepared.pairContain : prepared.pairCover };
+    return { portrait: row.portrait === 1, bytes: row.bytes ? Buffer.from(row.bytes) : null };
   }
   async frame(id: string, fit: Fit): Promise<Buffer | null> {
-    const full = this.image(id, fit, false);
+    const full = await this.image(id, fit);
     if (!full) return null;
     const primary = await this.portraitImage(id, fit);
     if (!primary?.portrait || !primary.bytes) return full;
@@ -80,13 +94,9 @@ export class Library {
     for (let offset = 1; offset < photos.length; offset++) {
       const candidate = photos[(index + offset) % photos.length];
       const partner = await this.portraitImage(candidate.id, fit);
-      if (partner?.portrait && partner.bytes) return combinePortraits(primary.bytes, partner.bytes);
+      if (partner?.portrait && partner.bytes) return await combinePortraits(primary.bytes, partner.bytes);
     }
     return full;
-  }
-  async jpegFrame(id: string, fit: Fit): Promise<Buffer | null> {
-    const pixels = await this.frame(id, fit);
-    return pixels ? jpegFromRgb565(pixels) : null;
   }
   next(after: string | null, direction: string | null): Photo | undefined {
     const photos = this.list();

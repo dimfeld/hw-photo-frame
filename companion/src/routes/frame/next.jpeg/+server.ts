@@ -10,7 +10,7 @@ export const GET: RequestHandler = async ({ url }) => {
   };
   const next = library.next(url.searchParams.get('after'), url.searchParams.get('direction'));
   if (!next) return new Response(null, { status: 204, headers });
-  const bytes = await library.jpegFrame(next.id, settings.fit);
+  const bytes = await library.frame(next.id, settings.fit);
   if (!bytes) return new Response(null, { status: 204, headers });
   return new Response(new Uint8Array(bytes), { headers: {
     ...headers,

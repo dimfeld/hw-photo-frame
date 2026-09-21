@@ -5,13 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { Library } from '../src/lib/server/library';
-import { jpegFromRgb565, prepare, DIVIDER_WIDTH, FRAME_BYTES, HEIGHT, isHeif, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
+import { prepare, DIVIDER_WIDTH, HEIGHT, isHeif, isJpeg, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
 const libraries: Library[] = [];
 afterEach(() => { for (const lib of libraries.splice(0)) lib.db.close(); });
 function library(path = ':memory:') { const lib = new Library(path); libraries.push(lib); return lib; }
 const photo = () => sharp({ create: { width: 100, height: 200, channels: 3, background: '#ff0000' } }).png().toBuffer();
 const solid = (width: number, height: number, background: string) =>
   sharp({ create: { width, height, channels: 3, background } }).png().toBuffer();
+const raw = (jpeg: Buffer) => sharp(jpeg).removeAlpha().raw().toBuffer();
+const pixel = (pixels: Buffer, x: number, y: number) => {
+  const offset = (y * WIDTH + x) * 3;
+  return [pixels[offset], pixels[offset + 1], pixels[offset + 2]];
+};
 
 describe('image contract', () => {
   test('HEIC and HEIF file signatures are detected without relying on the file name', () => {
@@ -23,32 +28,27 @@ describe('image contract', () => {
     expect(isHeif(heif)).toBe(true);
     expect(isHeif(Buffer.from('not an image'))).toBe(false);
   });
-  test('contain adds black borders; cover fills the panel; pixels are little-endian RGB565', async () => {
+  test('contain adds black borders and cover fills the panel in baseline JPEG images', async () => {
     const input = await photo();
     const contain = await prepare(input, 'contain');
     const cover = await prepare(input, 'cover');
-    expect(contain.pixels.length).toBe(FRAME_BYTES);
-    expect(contain.pixels.readUInt16LE(0)).toBe(0);
-    expect(contain.pixels.readUInt16LE((WIDTH * (HEIGHT / 2) + WIDTH / 2) * 2)).toBe(0xf800);
-    expect(cover.pixels.readUInt16LE(0)).toBe(0xf800);
-    expect(cover.pixels.readUInt16LE(FRAME_BYTES - 2)).toBe(0xf800);
-    const meta = await sharp(contain.preview).metadata();
-    expect([meta.width, meta.height, meta.format]).toEqual([WIDTH, HEIGHT, 'jpeg']);
+    const [containPixels, coverPixels, metadata] = await Promise.all([
+      raw(contain), raw(cover), sharp(contain).metadata()
+    ]);
+    expect(pixel(containPixels, 0, 0).every(channel => channel < 10)).toBe(true);
+    expect(pixel(containPixels, WIDTH / 2, HEIGHT / 2)[0]).toBeGreaterThan(240);
+    expect(pixel(coverPixels, 0, 0)[0]).toBeGreaterThan(240);
+    expect(pixel(coverPixels, WIDTH - 1, HEIGHT - 1)[0]).toBeGreaterThan(240);
+    expect([metadata.width, metadata.height, metadata.format, metadata.isProgressive])
+      .toEqual([WIDTH, HEIGHT, 'jpeg', false]);
   });
   test('EXIF orientation is applied before fitting', async () => {
     const input = await sharp({ create: { width: 200, height: 100, channels: 3, background: '#00ff00' } }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
     const result = await prepare(input, 'contain');
+    const pixels = await raw(result);
     // Rotated portrait is 300 pixels wide, centered at x=362..661.
-    expect(result.pixels.readUInt16LE((WIDTH * 300 + 200) * 2)).toBe(0);
-    expect(result.pixels.readUInt16LE((WIDTH * 300 + 512) * 2)).not.toBe(0);
-  });
-  test('RGB565 frames become baseline panel-sized JPEG images', async () => {
-    const pixels = Buffer.alloc(FRAME_BYTES);
-    pixels.fill(Buffer.from([0x00, 0xf8]));
-    const jpeg = await jpegFromRgb565(pixels);
-    const metadata = await sharp(jpeg).metadata();
-    expect([metadata.width, metadata.height, metadata.format, metadata.isProgressive])
-      .toEqual([WIDTH, HEIGHT, 'jpeg', false]);
+    expect(pixel(pixels, 200, 300).every(channel => channel < 10)).toBe(true);
+    expect(pixel(pixels, 512, 300)[1]).toBeGreaterThan(240);
   });
 });
 
@@ -70,9 +70,9 @@ describe('library', () => {
     expect(lib.next(a.id, 'previous')?.id).toBe(b.id);
     lib.saveSettings({ seconds: 300, crossfadeSeconds: 4, fit: 'cover', ordering: 'random' });
     expect(lib.next(a.id, null)?.id).toBe(b.id);
-    expect(lib.image(a.id, 'cover', false)?.length).toBe(FRAME_BYTES);
+    expect(isJpeg((await lib.image(a.id, 'cover'))!)).toBe(true);
     expect(lib.remove(a.id)).toBe(true);
-    expect(lib.image(a.id, 'contain', true)).toBeNull();
+    expect(await lib.image(a.id, 'contain')).toBeNull();
     expect(lib.next(a.id, null)?.id).toBe(b.id);
     expect(lib.next(b.id, null)?.id).toBe(b.id);
   });
@@ -83,34 +83,42 @@ describe('library', () => {
     await lib.add('blue.png', await solid(100, 200, '#0000ff'));
 
     const paired = await lib.frame(red.id, 'contain');
-    expect(paired?.length).toBe(FRAME_BYTES);
-    const pixel = (x: number, y = HEIGHT / 2) => paired!.readUInt16LE((y * WIDTH + x) * 2);
-    expect(pixel(Math.floor(PORTRAIT_WIDTH / 2))).toBe(0xf800);
-    for (let x = PORTRAIT_WIDTH; x < PORTRAIT_WIDTH + DIVIDER_WIDTH; x++) expect(pixel(x)).toBe(0x0000);
-    expect(pixel(PORTRAIT_WIDTH + DIVIDER_WIDTH + Math.floor(PORTRAIT_WIDTH / 2))).toBe(0x001f);
-    expect(await lib.frame(landscape.id, 'contain')).toEqual(lib.image(landscape.id, 'contain', false));
+    const pixels = await raw(paired!);
+    expect(pixel(pixels, Math.floor(PORTRAIT_WIDTH / 2), HEIGHT / 2)[0]).toBeGreaterThan(240);
+    for (let x = PORTRAIT_WIDTH; x < PORTRAIT_WIDTH + DIVIDER_WIDTH; x++) {
+      expect(pixel(pixels, x, HEIGHT / 2).every(channel => channel < 50)).toBe(true);
+    }
+    expect(pixel(pixels, PORTRAIT_WIDTH + DIVIDER_WIDTH + Math.floor(PORTRAIT_WIDTH / 2), HEIGHT / 2)[2])
+      .toBeGreaterThan(240);
+    expect(await lib.frame(landscape.id, 'contain')).toEqual(await lib.image(landscape.id, 'contain'));
   });
   test('a portrait remains full-screen when no other portrait exists', async () => {
     const lib = library();
     const red = await lib.add('red.png', await photo());
     await lib.add('green.png', await solid(200, 100, '#00ff00'));
-    expect(await lib.frame(red.id, 'cover')).toEqual(lib.image(red.id, 'cover', false));
+    expect(await lib.frame(red.id, 'cover')).toEqual(await lib.image(red.id, 'cover'));
   });
   test('JPEG frames include the composed display frame', async () => {
     const lib = library();
     const red = await lib.add('red.png', await solid(200, 100, '#ff0000'));
-    const jpeg = await lib.jpegFrame(red.id, 'cover');
+    const jpeg = await lib.frame(red.id, 'cover');
     const metadata = await sharp(jpeg!).metadata();
     expect([metadata.width, metadata.height, metadata.format]).toEqual([WIDTH, HEIGHT, 'jpeg']);
   });
-  test('portrait data is rebuilt lazily for photos from an older database', async () => {
+  test('RGB565 data from an older database is rebuilt lazily as JPEG', async () => {
     const lib = library();
     const red = await lib.add('red.png', await photo());
     await lib.add('blue.png', await solid(100, 200, '#0000ff'));
-    lib.db.query('UPDATE photos SET portrait=NULL,pair_contain=NULL,pair_cover=NULL WHERE id=?').run(red.id);
+    const legacy = Buffer.alloc(WIDTH * HEIGHT * 2);
+    lib.db.query(`UPDATE photos SET contain=?,cover=?,portrait=NULL,pair_contain=NULL,pair_cover=NULL
+      WHERE id=?`).run(legacy, legacy, red.id);
     const paired = await lib.frame(red.id, 'contain');
-    expect(paired?.readUInt16LE((PORTRAIT_WIDTH * 2))).toBe(0x0000);
-    expect((lib.db.query('SELECT portrait FROM photos WHERE id=?').get(red.id) as { portrait: number }).portrait).toBe(1);
+    expect(isJpeg(paired!)).toBe(true);
+    const migrated = lib.db.query('SELECT contain,cover,portrait FROM photos WHERE id=?').get(red.id) as
+      { contain: Uint8Array; cover: Uint8Array; portrait: number };
+    expect(isJpeg(migrated.contain)).toBe(true);
+    expect(isJpeg(migrated.cover)).toBe(true);
+    expect(migrated.portrait).toBe(1);
   });
   test('opening the previous database schema adds portrait columns', () => {
     const directory = mkdtempSync(join(tmpdir(), 'still-test-'));
@@ -146,7 +154,7 @@ describe('library', () => {
         expect(second.list()[0].id).toBe(added.id);
         expect(second.settings().seconds).toBe(17);
         expect(second.settings().crossfadeSeconds).toBe(3);
-        expect(second.image(added.id, 'cover', false)?.length).toBe(FRAME_BYTES);
+        expect(isJpeg((await second.image(added.id, 'cover'))!)).toBe(true);
       } finally { second.db.close(); }
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
