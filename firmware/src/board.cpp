@@ -1,7 +1,9 @@
 #include "board.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_rgb.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -9,16 +11,33 @@
 #include <cstring>
 
 static i2c_master_dev_handle_t touch;
+static const char *TAG = "board";
 static esp_lcd_panel_handle_t lcd_panel;
 static uint16_t *display_buffers[2];
 static uint16_t *frame_buffer;
+static uint16_t *reduced_from;
+static uint16_t *reduced_target;
+static const uint16_t *reduced_current_source;
 static uint32_t completed_frames;
 static portMUX_TYPE frame_lock = portMUX_INITIALIZER_UNLOCKED;
+
+// Half-resolution sources reduce PSRAM reads while bilinear expansion avoids
+// the visible blocks produced by the faster quarter-resolution experiment.
+static constexpr int FADE_SCALE = 2;
+static constexpr int FADE_WIDTH = WIDTH / FADE_SCALE;
+static constexpr int FADE_HEIGHT = HEIGHT / FADE_SCALE;
+static constexpr size_t FADE_BYTES = FADE_WIDTH * FADE_HEIGHT * sizeof(uint16_t);
+alignas(16) static uint16_t blended_rows[2][FADE_WIDTH];
+alignas(16) static uint16_t expanded_rows[2][WIDTH];
 
 extern "C" void blend_rgb565_simd(uint16_t *output, const uint16_t *from,
     const uint16_t *target, size_t pixels, uint16_t alpha, uint16_t inverse);
 static_assert((static_cast<size_t>(WIDTH) * HEIGHT) % 8 == 0,
     "The SIMD blend kernel requires complete eight-pixel blocks");
+static_assert(WIDTH % FADE_SCALE == 0 && HEIGHT % FADE_SCALE == 0,
+    "The reduced fade dimensions must divide the panel dimensions");
+static_assert(FADE_WIDTH % 8 == 0,
+    "Each reduced row must contain complete eight-pixel SIMD blocks");
 
 static void wait_until(int64_t due) {
     while (esp_timer_get_time() < due) {
@@ -52,6 +71,54 @@ static void present_frame() {
         vTaskDelay(1);
     } while (true);
     frame_buffer = frame_buffer == display_buffers[0] ? display_buffers[1] : display_buffers[0];
+}
+
+static uint16_t average_rgb565(uint16_t first, uint16_t second) {
+    return static_cast<uint16_t>((first & second) + (((first ^ second) & 0xf7de) >> 1));
+}
+
+static void reduce_fade_image(const uint16_t *source, uint16_t *destination) {
+    for (int y = 0; y < FADE_HEIGHT; ++y) {
+        const uint16_t *source_row_0 = source + y * FADE_SCALE * WIDTH;
+        const uint16_t *source_row_1 = source_row_0 + WIDTH;
+        uint16_t *destination_row = destination + y * FADE_WIDTH;
+        for (int x = 0; x < FADE_WIDTH; ++x) {
+            const int source_x = x * FADE_SCALE;
+            const uint16_t top = average_rgb565(source_row_0[source_x], source_row_0[source_x + 1]);
+            const uint16_t bottom = average_rgb565(source_row_1[source_x], source_row_1[source_x + 1]);
+            destination_row[x] = average_rgb565(top, bottom);
+        }
+    }
+}
+
+static void blend_reduced_frame(uint16_t alpha, uint16_t inverse) {
+    uint16_t *top = blended_rows[0];
+    uint16_t *bottom = blended_rows[1];
+    blend_rgb565_simd(top, reduced_from, reduced_target, FADE_WIDTH, alpha, inverse);
+    for (int y = 0; y < FADE_HEIGHT; ++y) {
+        if (y + 1 < FADE_HEIGHT) {
+            blend_rgb565_simd(bottom, reduced_from + (y + 1) * FADE_WIDTH,
+                reduced_target + (y + 1) * FADE_WIDTH, FADE_WIDTH, alpha, inverse);
+        } else {
+            memcpy(bottom, top, sizeof(blended_rows[0]));
+        }
+        for (int x = 0; x < FADE_WIDTH; ++x) {
+            const int next_x = std::min(x + 1, FADE_WIDTH - 1);
+            const uint16_t top_left = top[x];
+            const uint16_t top_right = top[next_x];
+            const uint16_t bottom_left = bottom[x];
+            const uint16_t bottom_right = bottom[next_x];
+            const int output_x = x * FADE_SCALE;
+            expanded_rows[0][output_x] = top_left;
+            expanded_rows[0][output_x + 1] = average_rgb565(top_left, top_right);
+            expanded_rows[1][output_x] = average_rgb565(top_left, bottom_left);
+            expanded_rows[1][output_x + 1] = average_rgb565(
+                average_rgb565(top_left, top_right), average_rgb565(bottom_left, bottom_right));
+        }
+        memcpy(frame_buffer + y * FADE_SCALE * WIDTH, expanded_rows[0], sizeof(expanded_rows[0]));
+        memcpy(frame_buffer + (y * FADE_SCALE + 1) * WIDTH, expanded_rows[1], sizeof(expanded_rows[1]));
+        std::swap(top, bottom);
+    }
 }
 
 static const uint8_t FONT[26][5] = {
@@ -106,6 +173,7 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
     if (duration_us <= 0) {
         memcpy(frame_buffer, target, FRAME_BYTES);
         present_frame();
+        reduced_current_source = nullptr;
         return;
     }
 
@@ -114,6 +182,13 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
         1000000LL * (WIDTH + 162 + 152 + 48) * (HEIGHT + 45 + 13 + 3) / 30000000;
     // RGB565 green has 64 levels, so more than 64 blend steps cannot add color precision.
     const int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
+    const bool reduced_fade = reduced_from && reduced_target && steps > 1;
+    if (reduced_fade) {
+        if (reduced_current_source != from) {
+            reduce_fade_image(from, reduced_from);
+        }
+        reduce_fade_image(target, reduced_target);
+    }
     const int64_t started = esp_timer_get_time();
     for (int step = 1; step < steps;) {
         const int64_t scheduled = (duration_us / steps) * step + (duration_us % steps) * step / steps;
@@ -133,14 +208,24 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
         }
         const int alpha = step * 256 / steps;
         const int inverse = 256 - alpha;
-        blend_rgb565_simd(frame_buffer, from, target, static_cast<size_t>(WIDTH) * HEIGHT,
-            static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
+        if (reduced_fade) {
+            blend_reduced_frame(static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
+        } else {
+            blend_rgb565_simd(frame_buffer, from, target, static_cast<size_t>(WIDTH) * HEIGHT,
+                static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
+        }
         present_frame();
         ++step;
     }
     wait_until(started + duration_us);
     memcpy(frame_buffer, target, FRAME_BYTES);
     present_frame();
+    if (reduced_fade) {
+        reduced_current_source = target;
+        std::swap(reduced_from, reduced_target);
+    } else if (reduced_from && reduced_target) {
+        reduced_current_source = nullptr;
+    }
 }
 
 // Pin map, timing, I/O registers, and reset delays follow Waveshare's 08_Touch example.
@@ -214,6 +299,17 @@ esp_lcd_panel_handle_t board_init() {
     ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(lcd_panel, 2, &fb0, &fb1));
     display_buffers[0] = static_cast<uint16_t *>(fb0);
     display_buffers[1] = static_cast<uint16_t *>(fb1);
+    reduced_from = static_cast<uint16_t *>(heap_caps_aligned_alloc(
+        16, FADE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    reduced_target = static_cast<uint16_t *>(heap_caps_aligned_alloc(
+        16, FADE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!reduced_from || !reduced_target) {
+        heap_caps_free(reduced_from);
+        heap_caps_free(reduced_target);
+        reduced_from = nullptr;
+        reduced_target = nullptr;
+        ESP_LOGW(TAG, "Reduced fade buffers unavailable; using full-resolution blending");
+    }
     memset(display_buffers[0], 0, FRAME_BYTES);
     memset(display_buffers[1], 0, FRAME_BYTES);
     frame_buffer = display_buffers[1];
