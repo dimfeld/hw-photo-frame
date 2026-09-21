@@ -11,6 +11,13 @@
 static i2c_master_dev_handle_t touch;
 static uint16_t *frame_buffer;
 
+static void wait_until(int64_t due) {
+    while (esp_timer_get_time() < due) {
+        const int64_t ticks = (due - esp_timer_get_time()) / (1000000 / configTICK_RATE_HZ);
+        vTaskDelay(static_cast<TickType_t>(std::max<int64_t>(1, std::min<int64_t>(ticks, portMAX_DELAY - 1))));
+    }
+}
+
 static const uint8_t FONT[26][5] = {
     {0x7e, 0x09, 0x09, 0x09, 0x7e}, {0x7f, 0x49, 0x49, 0x49, 0x36},
     {0x3e, 0x41, 0x41, 0x41, 0x22}, {0x7f, 0x41, 0x41, 0x22, 0x1c},
@@ -70,7 +77,22 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
     // RGB565 green has 64 levels, so more than 64 blend steps cannot add color precision.
     const int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
     const int64_t started = esp_timer_get_time();
-    for (int step = 1; step <= steps; ++step) {
+    for (int step = 1; step < steps;) {
+        const int64_t scheduled = (duration_us / steps) * step + (duration_us % steps) * step / steps;
+        wait_until(started + scheduled);
+
+        const int64_t elapsed = esp_timer_get_time() - started;
+        if (elapsed >= duration_us) break;
+        // A full-screen PSRAM blend can take longer than one scheduled step. Skip
+        // obsolete steps so the fade follows wall-clock time instead of running
+        // all remaining blends late.
+        while (step + 1 < steps) {
+            const int next = step + 1;
+            const int64_t next_scheduled =
+                (duration_us / steps) * next + (duration_us % steps) * next / steps;
+            if (next_scheduled > elapsed) break;
+            step = next;
+        }
         const int alpha = step * 256 / steps;
         const int inverse = 256 - alpha;
         for (size_t pixel = 0; pixel < static_cast<size_t>(WIDTH) * HEIGHT; ++pixel) {
@@ -81,13 +103,11 @@ void board_crossfade(const uint8_t *from_bytes, const uint8_t *target_bytes, int
             const int blue = ((old_pixel & 0x1f) * inverse + (new_pixel & 0x1f) * alpha + 128) >> 8;
             frame_buffer[pixel] = static_cast<uint16_t>((red << 11) | (green << 5) | blue);
         }
-        const int64_t elapsed = (duration_us / steps) * step + (duration_us % steps) * step / steps;
-        const int64_t due = started + elapsed;
-        while (esp_timer_get_time() < due) {
-            const int64_t ticks = (due - esp_timer_get_time()) / (1000000 / configTICK_RATE_HZ);
-            vTaskDelay(static_cast<TickType_t>(std::max<int64_t>(1, std::min<int64_t>(ticks, portMAX_DELAY - 1))));
-        }
+        // Let the idle task run even when rendering takes longer than the interval.
+        vTaskDelay(1);
+        ++step;
     }
+    wait_until(started + duration_us);
     memcpy(frame_buffer, target, FRAME_BYTES);
 }
 
