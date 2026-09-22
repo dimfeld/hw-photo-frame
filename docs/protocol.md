@@ -15,7 +15,8 @@ A photo response has status `200` and these headers:
 | X-Frame-Format | jpeg-baseline-1024x600 |
 | X-Photo-Id | UUID of the selected photo |
 | X-Display-Seconds | Saved photo time, default 10 |
-| X-Crossfade-Seconds | Saved crossfade time, default 2; zero disables the fade |
+| X-Crossfade-Seconds | Saved transition time, default 2; zero disables the transition |
+| X-Transition | `crossfade` or `fade-through-black`; default `crossfade` |
 | Cache-Control | no-store |
 
 The body is a baseline 1024 × 600 JPEG image. The server stores prepared display images as JPEG data. Existing RGB565 database rows are rebuilt from their retained original image when the server first uses them.
@@ -24,7 +25,7 @@ If the selected photo has portrait orientation and the library has another portr
 
 A photo with a saved fill layout uses its own crop in place of the global fit, in both the full-screen and the 511 × 600 layouts. A portrait photo with `solo` set is always full-screen, and the server does not select it as the second photo.
 
-An empty library returns `204`, with both timing headers and no body. The frame keeps its image and uses the display time before its next request. A failed request also leaves the image intact. The frame advances its local cursor only after it receives a complete valid image.
+An empty library returns `204`, with the timing and transition headers and no body. The frame keeps its image and uses the display time before its next request. A failed request also leaves the image intact. The frame advances its local cursor only after it receives a complete valid image.
 
 Each frame keeps its own cursor. Preview requests do not advance the physical frame.
 
@@ -36,10 +37,10 @@ Other routes:
 | POST /api/photos?name=… | Upload one image as the raw request body |
 | PUT /api/photos/:id | JSON layout: fill (boolean), solo (boolean), x and y (crop center, 0 to 1), zoom (1 to 3) |
 | DELETE /api/photos/:id | Remove one stored photo and its prepared data |
-| PUT /api/settings | JSON: seconds, crossfadeSeconds, fit (`contain` or `cover`), ordering (`sequential` or `random`) |
+| PUT /api/settings | JSON: seconds, crossfadeSeconds, transition (`crossfade` or `fade-through-black`), fit (`contain` or `cover`), ordering (`sequential` or `random`) |
 | GET /photo/:id?fit=contain | JPEG preview; a photo with a fill layout returns its crop |
 | GET /photo/:id/working | JPEG working copy for the crop editor |
 
 Requests that change data must send an `Origin` header that matches the configured app origin. Photo names are display labels, not file paths. Database queries bind user data as parameters.
 
-The photo time must be a positive whole number of seconds. The crossfade time must be a nonnegative whole number of seconds. The upper bounds are derived from JavaScript's safe integer range after conversion to microseconds. The firmware splits long waits at the FreeRTOS tick range.
+The photo time must be a positive whole number of seconds. The transition time must be a nonnegative whole number of seconds. The upper bounds are derived from JavaScript's safe integer range after conversion to microseconds. The firmware splits long waits at the FreeRTOS tick range.

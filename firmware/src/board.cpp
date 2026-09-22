@@ -29,6 +29,7 @@ static constexpr int FADE_HEIGHT = HEIGHT / FADE_SCALE;
 static constexpr size_t FADE_BYTES = FADE_WIDTH * FADE_HEIGHT * sizeof(uint16_t);
 alignas(16) static uint16_t blended_rows[2][FADE_WIDTH];
 alignas(16) static uint16_t horizontal_top[FADE_WIDTH];
+alignas(16) static const uint16_t black_row[FADE_WIDTH] = {};
 alignas(16) static uint16_t decoded_block[WIDTH * 16];
 
 extern "C" void blend_rgb565_simd(uint16_t *output, const uint16_t *from,
@@ -78,14 +79,20 @@ static uint16_t average_rgb565(uint16_t first, uint16_t second) {
     return static_cast<uint16_t>((first & second) + (((first ^ second) & 0xf7de) >> 1));
 }
 
-static void blend_reduced_frame(uint16_t alpha, uint16_t inverse) {
+static const uint16_t *reduced_row(const uint16_t *image, int y) {
+    return image ? image + y * FADE_WIDTH : black_row;
+}
+
+static void blend_reduced_frame(const uint16_t *from, const uint16_t *target,
+    uint16_t alpha, uint16_t inverse) {
     uint16_t *top = blended_rows[0];
     uint16_t *bottom = blended_rows[1];
-    blend_rgb565_simd(top, reduced_from, reduced_target, FADE_WIDTH, alpha, inverse);
+    blend_rgb565_simd(top, reduced_row(from, 0), reduced_row(target, 0),
+        FADE_WIDTH, alpha, inverse);
     for (int y = 0; y < FADE_HEIGHT; ++y) {
         if (y + 1 < FADE_HEIGHT) {
-            blend_rgb565_simd(bottom, reduced_from + (y + 1) * FADE_WIDTH,
-                reduced_target + (y + 1) * FADE_WIDTH, FADE_WIDTH, alpha, inverse);
+            blend_rgb565_simd(bottom, reduced_row(from, y + 1), reduced_row(target, y + 1),
+                FADE_WIDTH, alpha, inverse);
         } else {
             memcpy(bottom, top, sizeof(blended_rows[0]));
         }
@@ -243,15 +250,17 @@ bool board_show_jpeg(const uint8_t *jpeg, size_t length) {
     return true;
 }
 
-bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
-    const uint8_t *target, size_t target_length, int64_t duration_us) {
+static bool board_fade_jpegs(const uint8_t *from, size_t from_length,
+    const uint8_t *target, size_t target_length, int64_t duration_us, bool through_black) {
     if (duration_us <= 0) return board_show_jpeg(target, target_length);
 
     // This period comes from the configured 30 MHz pixel clock and panel timings.
     constexpr int64_t frame_period_us =
         1000000LL * (WIDTH + 162 + 152 + 48) * (HEIGHT + 45 + 13 + 3) / 30000000;
     // RGB565 green has 64 levels, so more than 64 blend steps cannot add color precision.
-    const int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
+    int steps = static_cast<int>(std::min<int64_t>(64, std::max<int64_t>(1, duration_us / frame_period_us)));
+    // An even count gives the through-black transition an exact black midpoint.
+    if (through_black && steps > 1 && steps % 2 != 0) --steps;
     const int64_t preparation_started = esp_timer_get_time();
     const bool reduced_fade = reduced_from && reduced_target && steps > 1
         && decode_reduced_jpeg(from, from_length, reduced_from)
@@ -269,11 +278,14 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
         wait_until(started + scheduled);
 
         const int64_t elapsed = esp_timer_get_time() - started;
-        if (elapsed >= duration_us) break;
+        const int black_step = through_black ? steps / 2 : 0;
+        if (elapsed >= duration_us && (!through_black || step > black_step)) break;
         // A full-screen PSRAM blend can take longer than one scheduled step. Skip
         // obsolete steps so the fade follows wall-clock time instead of running
         // all remaining blends late.
         while (step + 1 < steps) {
+            // The black midpoint is required even when rendering falls behind.
+            if (through_black && step == black_step) break;
             const int next = step + 1;
             const int64_t next_scheduled =
                 (duration_us / steps) * next + (duration_us % steps) * next / steps;
@@ -281,10 +293,26 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
             step = next;
             ++skipped;
         }
-        const int alpha = step * 256 / steps;
+        int alpha;
+        const uint16_t *blend_from;
+        const uint16_t *blend_target;
+        if (!through_black) {
+            alpha = step * 256 / steps;
+            blend_from = reduced_from;
+            blend_target = reduced_target;
+        } else if (step <= steps / 2) {
+            alpha = step * 512 / steps;
+            blend_from = reduced_from;
+            blend_target = nullptr;
+        } else {
+            alpha = (step * 2 - steps) * 256 / steps;
+            blend_from = nullptr;
+            blend_target = reduced_target;
+        }
         const int inverse = 256 - alpha;
         const int64_t blend_started = esp_timer_get_time();
-        blend_reduced_frame(static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
+        blend_reduced_frame(blend_from, blend_target,
+            static_cast<uint16_t>(alpha), static_cast<uint16_t>(inverse));
         const int64_t blend_time = esp_timer_get_time() - blend_started;
         blend_total += blend_time;
         blend_max = std::max(blend_max, blend_time);
@@ -297,6 +325,16 @@ bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
         (esp_timer_get_time() - started) / 1000, presented, skipped,
         presented ? blend_total / presented / 1000 : 0, blend_max / 1000);
     return board_show_jpeg(target, target_length);
+}
+
+bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
+    const uint8_t *target, size_t target_length, int64_t duration_us) {
+    return board_fade_jpegs(from, from_length, target, target_length, duration_us, false);
+}
+
+bool board_fade_through_black_jpegs(const uint8_t *from, size_t from_length,
+    const uint8_t *target, size_t target_length, int64_t duration_us) {
+    return board_fade_jpegs(from, from_length, target, target_length, duration_us, true);
 }
 
 // Pin map, timing, I/O registers, and reset delays follow Waveshare's 08_Touch example.

@@ -6,7 +6,8 @@ import { combinePortraits, HEIGHT, isJpeg, PORTRAIT_WIDTH, prepareBoth, prepareW
 export type Layout = { fill: boolean; solo: boolean; x: number; y: number; zoom: number };
 export type Photo = { id: string; name: string; created: number; layout: Layout };
 type PhotoRow = { id: string; name: string; created: number; fill: number; solo: number; crop_x: number; crop_y: number; crop_zoom: number };
-export type Settings = { seconds: number; crossfadeSeconds: number; fit: Fit; ordering: 'sequential' | 'random' };
+export type Transition = 'crossfade' | 'fade-through-black';
+export type Settings = { seconds: number; crossfadeSeconds: number; transition: Transition; fit: Fit; ordering: 'sequential' | 'random' };
 
 export class Library {
   readonly db: Database;
@@ -33,7 +34,9 @@ export class Library {
       ['crop_zoom', 'REAL NOT NULL DEFAULT 1'], ['fill_full', 'BLOB'], ['fill_pair', 'BLOB']
     ];
     for (const [name, type] of added) if (!columns.has(name)) this.db.exec(`ALTER TABLE photos ADD COLUMN ${name} ${type}`);
-    this.db.query('INSERT OR IGNORE INTO settings VALUES (1, ?)').run(JSON.stringify({ seconds: 10, crossfadeSeconds: 2, fit: 'contain', ordering: 'sequential' }));
+    this.db.query('INSERT OR IGNORE INTO settings VALUES (1, ?)').run(JSON.stringify({
+      seconds: 10, crossfadeSeconds: 2, transition: 'crossfade', fit: 'contain', ordering: 'sequential'
+    }));
   }
   list(): Photo[] {
     const rows = this.db.query(`SELECT id,name,created,fill,solo,crop_x,crop_y,crop_zoom
@@ -44,7 +47,7 @@ export class Library {
   }
   settings(): Settings {
     const saved = JSON.parse((this.db.query('SELECT value FROM settings WHERE id=1').get() as { value: string }).value);
-    return { ...saved, crossfadeSeconds: saved.crossfadeSeconds ?? 2 };
+    return { ...saved, crossfadeSeconds: saved.crossfadeSeconds ?? 2, transition: saved.transition ?? 'crossfade' };
   }
   saveSettings(value: unknown): Settings {
     const s = value as Settings;
@@ -52,10 +55,13 @@ export class Library {
     if (!s || !Number.isSafeInteger(s.seconds) || s.seconds! <= 0 || s.seconds! > Math.floor(Number.MAX_SAFE_INTEGER / 1000000)
       || !Number.isSafeInteger(s.crossfadeSeconds) || s.crossfadeSeconds < 0
       || s.crossfadeSeconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000000)
+      || !['crossfade', 'fade-through-black'].includes(s.transition)
       || !['contain', 'cover'].includes(s.fit) || !['sequential', 'random'].includes(s.ordering)) {
       throw new Error('Enter valid whole-second timing and display options.');
     }
-    const settings = { seconds: s.seconds, crossfadeSeconds: s.crossfadeSeconds, fit: s.fit, ordering: s.ordering };
+    const settings = {
+      seconds: s.seconds, crossfadeSeconds: s.crossfadeSeconds, transition: s.transition, fit: s.fit, ordering: s.ordering
+    };
     this.db.query('UPDATE settings SET value=? WHERE id=1').run(JSON.stringify(settings));
     return settings;
   }

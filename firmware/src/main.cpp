@@ -58,6 +58,7 @@ static void touch_task(void *) {
 }
 struct Reply {
     std::string id, format;
+    std::string transition;
     int64_t seconds = -1;
     int64_t crossfade_seconds = -1;
 };
@@ -75,6 +76,11 @@ static esp_err_t http_event(esp_http_client_event_t *event) {
         char *end;
         const long long value = strtoll(event->header_value, &end, 10);
         if (*end == '\0' && value >= 0 && value <= INT64_MAX / 1000000) reply.crossfade_seconds = value;
+    }
+    if (!strcasecmp(event->header_key, "X-Transition")) {
+        if (!strcmp(event->header_value, "crossfade") || !strcmp(event->header_value, "fade-through-black")) {
+            reply.transition = event->header_value;
+        }
     }
     return ESP_OK;
 }
@@ -179,6 +185,7 @@ extern "C" void app_main() {
     ESP_ERROR_CHECK(esp_wifi_start());
     int64_t seconds = FRAME_RETRY_SECONDS;
     int64_t crossfade_seconds = 2;
+    std::string transition = "crossfade";
     int64_t due = 0;
     bool paused = false;
     std::string current;
@@ -208,8 +215,14 @@ extern "C" void app_main() {
             if (!has_photo) {
                 displayed = board_show_jpeg(next_image.bytes, next_image.length);
             } else if (current != reply.id) {
-                displayed = board_crossfade_jpegs(current_image.bytes, current_image.length,
-                    next_image.bytes, next_image.length, fade * 1000000);
+                const std::string &effect = reply.transition.empty() ? transition : reply.transition;
+                if (effect == "fade-through-black") {
+                    displayed = board_fade_through_black_jpegs(current_image.bytes, current_image.length,
+                        next_image.bytes, next_image.length, fade * 1000000);
+                } else {
+                    displayed = board_crossfade_jpegs(current_image.bytes, current_image.length,
+                        next_image.bytes, next_image.length, fade * 1000000);
+                }
             }
             if (displayed) {
                 free_jpeg(current_image);
@@ -225,6 +238,7 @@ extern "C" void app_main() {
         free_jpeg(next_image);
         if (reply.seconds >= 0) seconds = reply.seconds;
         if (reply.crossfade_seconds >= 0) crossfade_seconds = reply.crossfade_seconds;
+        if (!reply.transition.empty()) transition = reply.transition;
         due = esp_timer_get_time() + seconds * 1000000;
     }
 }
