@@ -79,6 +79,22 @@ A held touch produces one action. In random mode, “previous” means the previ
 
 At boot, the screen shows `CONNECTING TO WIFI`. After Wi-Fi connects, it shows `WIFI CONNECTED` until the first complete photo arrives. It retries every 10 seconds until it receives server settings. It then uses the saved photo time for retries. The current photo is in RAM; it does not survive a power loss. A missing or empty server does not erase a photo already on screen.
 
+### Optional automatic brightness
+
+The Type B board can control the LCD backlight through its on-board controller. No external backlight transistor is required. The firmware also supports an LDR voltage divider on the three-pin J8 header:
+
+```text
+3V3 --- LDR ---+--- GPIO6 (J8 pin 3)
+               |
+          fixed resistor
+               |
+GND ------------+--- J8 pin 2
+```
+
+Use a fixed resistor with a value close to the LDR resistance in normal room light. GPIO6 is ESP32-S3 ADC1 channel 5, so ADC reads do not conflict with Wi-Fi. Keep the divider output between 0 V and 3.3 V.
+
+Automatic brightness is disabled by default. To enable and calibrate it, add the three automatic-brightness settings from `secrets.example.h` to `secrets.h`. First use the complete raw range, flash the board, and read the `Ambient light raw` values from the serial monitor in the darkest and brightest expected conditions. Put those measured values in `FRAME_LDR_DARK_RAW` and `FRAME_LDR_BRIGHT_RAW`, then flash the board again. The backlight maps these endpoints to the controller's supported range of 3% through 100%.
+
 ## Design and hardware notes
 
 The companion app uses SvelteKit with `adapter-node`, run by **Bun**, plus Bun SQLite, Sharp, and the `heif-convert` CLI from libheif. Node alone cannot run this app because it uses `bun:sqlite`.
@@ -108,6 +124,8 @@ See [the wire protocol](docs/protocol.md) for endpoint details.
 ## Sources
 
 - [Waveshare Type B example code](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-7B/tree/master/examples/ESP-IDF/08_Touch): panel pins, timing, I/O registers, and touch reset sequence.
+- [Waveshare brightness slider example](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-7B/tree/master/examples/ESP-IDF/15_LVGL_SLIDER): backlight PWM register and inverted duty cycle.
+- [Waveshare Type B schematic](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-7B/blob/master/hardware/schematics/ESP32-S3-Touch-LCD-7B-Schematic.pdf): J8 exposes 3V3, GND, and GPIO6.
 - [Waveshare Type B user guide](https://docs.waveshare.com/ESP32-S3-Touch-LCD-7B/Instructions-For-Use): board setup and USB boot steps.
 - [SvelteKit adapter-node](https://svelte.dev/docs/kit/adapter-node): server build and environment settings.
 - [Bun with SvelteKit](https://bun.sh/guides/ecosystem/sveltekit).

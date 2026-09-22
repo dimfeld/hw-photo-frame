@@ -23,5 +23,7 @@ The board was not connected during development. Before normal use:
 4. Let photos change at the default 10-second time. Check display stability during network transfers.
 5. Stop the server during a transfer. The last complete photo must remain on screen. Restart the server and check recovery.
 6. Disconnect and reconnect Wi-Fi, then restart the board. Check connection recovery and the first photo request.
+7. Before an LDR is connected, confirm that automatic brightness is disabled and that the backlight starts at full brightness.
+8. After the LDR divider is connected and calibrated, move it between the darkest and brightest expected conditions. Confirm that the serial ADC reading increases and the backlight changes smoothly across the configured endpoints.
 
 No claim of a physical board test is made by the successful compiler build.

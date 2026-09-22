@@ -14,6 +14,7 @@
 static i2c_master_dev_handle_t touch;
 static const char *TAG = "board";
 static esp_lcd_panel_handle_t lcd_panel;
+static i2c_master_dev_handle_t io_extension;
 static uint16_t *display_buffers[2];
 static uint16_t *frame_buffer;
 static uint16_t *reduced_from;
@@ -342,6 +343,17 @@ static void write_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t value) {
     uint8_t bytes[] = {reg, value};
     ESP_ERROR_CHECK(i2c_master_transmit(dev, bytes, sizeof(bytes), 100));
 }
+
+void board_set_brightness(uint8_t percent) {
+    // Register 0x05 is an inverted PWM duty cycle. Waveshare limits the duty
+    // cycle to 97%, which keeps the backlight from turning fully off.
+    const uint8_t brightness = std::clamp<uint8_t>(percent, 3, 100);
+    const uint8_t inverted_percent = 100 - brightness;
+    const uint8_t pwm = static_cast<uint8_t>(
+        static_cast<uint16_t>(inverted_percent) * 255 / 100);
+    write_reg(io_extension, 0x05, pwm);
+}
+
 esp_lcd_panel_handle_t board_init() {
     i2c_master_bus_config_t bus_config = {};
     bus_config.i2c_port = I2C_NUM_0;
@@ -355,18 +367,17 @@ esp_lcd_panel_handle_t board_init() {
     dev.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev.device_address = 0x24;
     dev.scl_speed_hz = 400000;
-    i2c_master_dev_handle_t io;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev, &io));
-    write_reg(io, 0x02, 0xff);
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus, &dev, &io_extension));
+    write_reg(io_extension, 0x02, 0xff);
     // Keep SD deselected, select USB, hold touch in reset, and turn off the backlight.
     uint8_t output = 0xff & ~(1 << 5) & ~(1 << 2) & ~(1 << 1);
-    write_reg(io, 0x03, output);
+    write_reg(io_extension, 0x03, output);
     ESP_ERROR_CHECK(gpio_set_direction(GPIO_NUM_4, GPIO_MODE_OUTPUT));
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_4, 0));
     vTaskDelay(pdMS_TO_TICKS(100));
     output |= 1 << 1;
-    write_reg(io, 0x03, output);
+    write_reg(io_extension, 0x03, output);
     vTaskDelay(pdMS_TO_TICKS(200));
     ESP_ERROR_CHECK(gpio_set_direction(GPIO_NUM_4, GPIO_MODE_INPUT));
     dev.device_address = 0x5d;
@@ -422,7 +433,8 @@ esp_lcd_panel_handle_t board_init() {
     memset(display_buffers[0], 0, FRAME_BYTES);
     memset(display_buffers[1], 0, FRAME_BYTES);
     frame_buffer = display_buffers[1];
-    write_reg(io, 0x03, output | (1 << 2));
+    write_reg(io_extension, 0x03, output | (1 << 2));
+    board_set_brightness(100);
     return lcd_panel;
 }
 bool board_touch(uint16_t &x, bool &pressed) {

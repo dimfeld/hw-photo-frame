@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <string>
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -24,6 +25,54 @@ static const char *TAG = "frame";
 static TaskHandle_t frame_task;
 static TaskHandle_t touch_task_handle;
 static constexpr uint32_t NEXT = 1, PREVIOUS = 2, PAUSE = 4, CONNECTED = 8;
+
+#ifndef FRAME_AUTO_BRIGHTNESS
+#define FRAME_AUTO_BRIGHTNESS 0
+#endif
+
+#if FRAME_AUTO_BRIGHTNESS
+#if !defined(FRAME_LDR_DARK_RAW) || !defined(FRAME_LDR_BRIGHT_RAW)
+#error "Set FRAME_LDR_DARK_RAW and FRAME_LDR_BRIGHT_RAW before enabling auto brightness"
+#endif
+static_assert(FRAME_LDR_DARK_RAW >= 0 && FRAME_LDR_DARK_RAW < FRAME_LDR_BRIGHT_RAW,
+    "LDR calibration must increase from dark to bright");
+static_assert(FRAME_LDR_BRIGHT_RAW <= 4095, "LDR calibration exceeds the 12-bit ADC range");
+
+static void brightness_task(void *) {
+    adc_oneshot_unit_init_cfg_t unit_config = {};
+    unit_config.unit_id = ADC_UNIT_1;
+    unit_config.ulp_mode = ADC_ULP_MODE_DISABLE;
+    adc_oneshot_unit_handle_t adc;
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&unit_config, &adc));
+
+    adc_oneshot_chan_cfg_t channel_config = {};
+    channel_config.atten = ADC_ATTEN_DB_12;
+    channel_config.bitwidth = ADC_BITWIDTH_12;
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc, ADC_CHANNEL_5, &channel_config));
+
+    int previous_brightness = -1;
+    for (;;) {
+        int total = 0;
+        for (int sample = 0; sample < 10; ++sample) {
+            int raw = 0;
+            ESP_ERROR_CHECK(adc_oneshot_read(adc, ADC_CHANNEL_5, &raw));
+            total += raw;
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        const int raw = total / 10;
+        const int calibrated = std::clamp(raw, FRAME_LDR_DARK_RAW, FRAME_LDR_BRIGHT_RAW);
+        const int brightness = 3 + (calibrated - FRAME_LDR_DARK_RAW) * 97
+            / (FRAME_LDR_BRIGHT_RAW - FRAME_LDR_DARK_RAW);
+        if (brightness != previous_brightness) {
+            board_set_brightness(static_cast<uint8_t>(brightness));
+            ESP_LOGI(TAG, "Ambient light raw=%d; backlight=%d%%", raw, brightness);
+            previous_brightness = brightness;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+#endif
+
 static void wifi_event(void *, esp_event_base_t base, int32_t id, void *event_data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         ESP_LOGI(TAG, "Wi-Fi started; connecting");
@@ -158,6 +207,12 @@ extern "C" void app_main() {
     ESP_LOGI(TAG, "Starting photo frame");
     frame_task = xTaskGetCurrentTaskHandle();
     board_init();
+#if FRAME_AUTO_BRIGHTNESS
+    TaskHandle_t brightness_task_handle;
+    BaseType_t brightness_created = xTaskCreate(brightness_task, "brightness",
+        CONFIG_ESP_MAIN_TASK_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &brightness_task_handle);
+    configASSERT(brightness_created == pdPASS);
+#endif
     board_show_status("CONNECTING TO WIFI");
     // Use the IDF main-task stack size for I2C calls and driver error logs.
     BaseType_t created = xTaskCreate(touch_task, "touch", CONFIG_ESP_MAIN_TASK_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &touch_task_handle);

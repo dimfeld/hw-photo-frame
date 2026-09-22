@@ -5,6 +5,9 @@ constexpr int WIDTH = 1024;
 constexpr int HEIGHT = 600;
 constexpr size_t FRAME_BYTES = WIDTH * HEIGHT * sizeof(uint16_t);
 esp_lcd_panel_handle_t board_init();
+// The Type B controller accepts 3% through 100%. Values below 3% are clamped
+// because Waveshare's controller example avoids a fully-off PWM duty cycle.
+void board_set_brightness(uint8_t percent);
 void board_show_status(const char *text);
 bool board_show_jpeg(const uint8_t *jpeg, size_t length);
 bool board_crossfade_jpegs(const uint8_t *from, size_t from_length,
