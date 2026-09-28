@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { cropRect, MAX_ZOOM, type Crop } from '../crop';
 
 const execFileAsync = promisify(execFile);
 const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
@@ -79,20 +80,50 @@ export async function combinePortraits(left: Buffer, right: Buffer): Promise<Buf
     .jpeg({ progressive: false }).toBuffer();
 }
 
+// The working copy keeps enough pixels to fill the panel at the largest crop zoom.
+async function prepareWorkingDecoded(decoded: Buffer) {
+  return sharp(decoded, { failOn: 'error' }).rotate()
+    .resize(WIDTH * MAX_ZOOM, HEIGHT * MAX_ZOOM, { fit: 'outside', withoutEnlargement: true })
+    .flatten({ background: '#000000' }).toColourspace('srgb').removeAlpha()
+    .jpeg({ quality: 90 }).toBuffer();
+}
+
+export async function prepareWorking(original: Buffer) {
+  return prepareWorkingDecoded(await decodeHeif(original));
+}
+
+export async function renderCrop(working: Buffer, targetWidth: number, targetHeight: number, crop: Crop) {
+  const { width, height } = await sharp(working, { failOn: 'error' }).metadata();
+  if (!width || !height) throw new Error('Image dimensions are missing');
+  const rect = cropRect(width, height, targetWidth, targetHeight, crop);
+  const left = Math.round(rect.left);
+  const top = Math.round(rect.top);
+  return sharp(working, { failOn: 'error' })
+    .extract({
+      left, top,
+      width: Math.max(1, Math.min(Math.round(rect.width), width - left)),
+      height: Math.max(1, Math.min(Math.round(rect.height), height - top))
+    })
+    .resize(targetWidth, targetHeight, { fit: 'fill' })
+    .jpeg({ progressive: false }).toBuffer();
+}
+
 export async function prepare(original: Buffer, fit: Fit) {
   return prepareDecoded(await decodeHeif(original), fit);
 }
 
 export async function prepareBoth(original: Buffer) {
   const decoded = await decodeHeif(original);
-  const [contain, cover, portrait] = await Promise.all([
+  const [contain, cover, portrait, working] = await Promise.all([
     prepareDecoded(decoded, 'contain'),
     prepareDecoded(decoded, 'cover'),
-    preparePortraitDecoded(decoded)
+    preparePortraitDecoded(decoded),
+    prepareWorkingDecoded(decoded)
   ]);
   return {
     contain,
     cover,
+    working,
     ...portrait
   };
 }

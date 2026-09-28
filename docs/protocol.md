@@ -22,6 +22,8 @@ The body is a baseline 1024 × 600 JPEG image. The server stores prepared displa
 
 If the selected photo has portrait orientation and the library has another portrait photo, the body contains both photos in 511 × 600 areas. A two-pixel black divider separates them. The server selects the second photo by moving forward through upload order and wrapping if necessary. `X-Photo-Id` identifies the selected photo on the left. If there is no second portrait photo, the body contains only the selected photo with its configured fit.
 
+A photo with a saved fill layout uses its own crop in place of the global fit, in both the full-screen and the 511 × 600 layouts. A portrait photo with `solo` set is always full-screen, and the server does not select it as the second photo.
+
 An empty library returns `204`, with both timing headers and no body. The frame keeps its image and uses the display time before its next request. A failed request also leaves the image intact. The frame advances its local cursor only after it receives a complete valid image.
 
 Each frame keeps its own cursor. Preview requests do not advance the physical frame.
@@ -32,9 +34,11 @@ Other routes:
 | --- | --- |
 | GET / | Library, settings, and preview |
 | POST /api/photos?name=… | Upload one image as the raw request body |
+| PUT /api/photos/:id | JSON layout: fill (boolean), solo (boolean), x and y (crop center, 0 to 1), zoom (1 to 3) |
 | DELETE /api/photos/:id | Remove one stored photo and its prepared data |
 | PUT /api/settings | JSON: seconds, crossfadeSeconds, fit (`contain` or `cover`), ordering (`sequential` or `random`) |
-| GET /photo/:id?fit=contain | JPEG preview |
+| GET /photo/:id?fit=contain | JPEG preview; a photo with a fill layout returns its crop |
+| GET /photo/:id/working | JPEG working copy for the crop editor |
 
 Requests that change data must send an `Origin` header that matches the configured app origin. Photo names are display labels, not file paths. Database queries bind user data as parameters.
 

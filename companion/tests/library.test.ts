@@ -5,13 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { Library } from '../src/lib/server/library';
-import { prepare, DIVIDER_WIDTH, HEIGHT, isHeif, isJpeg, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
+import { clampCrop, cropRect } from '../src/lib/crop';
+import { prepare, prepareWorking, DIVIDER_WIDTH, HEIGHT, isHeif, isJpeg, PORTRAIT_WIDTH, WIDTH } from '../src/lib/server/images';
 const libraries: Library[] = [];
 afterEach(() => { for (const lib of libraries.splice(0)) lib.db.close(); });
 function library(path = ':memory:') { const lib = new Library(path); libraries.push(lib); return lib; }
 const photo = () => sharp({ create: { width: 100, height: 200, channels: 3, background: '#ff0000' } }).png().toBuffer();
 const solid = (width: number, height: number, background: string) =>
   sharp({ create: { width, height, channels: 3, background } }).png().toBuffer();
+// Left half red, right half blue.
+const split = (width: number, height: number) => sharp({ create: { width, height, channels: 3, background: '#0000ff' } })
+  .composite([{ input: { create: { width: width / 2, height, channels: 3, background: '#ff0000' } }, left: 0, top: 0 }])
+  .png().toBuffer();
 const raw = (jpeg: Buffer) => sharp(jpeg).removeAlpha().raw().toBuffer();
 const pixel = (pixels: Buffer, x: number, y: number) => {
   const offset = (y * WIDTH + x) * 3;
@@ -52,7 +57,72 @@ describe('image contract', () => {
   });
 });
 
+describe('crop', () => {
+  test('zoom 1 matches a cover fit and the center is clamped inside the image', () => {
+    expect(cropRect(2000, 1000, 1000, 1000, { x: 0.5, y: 0.5, zoom: 1 }))
+      .toEqual({ left: 500, top: 0, width: 1000, height: 1000 });
+    expect(cropRect(2000, 1000, 1000, 1000, { x: 0, y: 0.5, zoom: 2 }))
+      .toEqual({ left: 0, top: 250, width: 500, height: 500 });
+    expect(clampCrop(2000, 1000, 1000, 1000, { x: 1, y: 0, zoom: 2 })).toEqual({ x: 0.875, y: 0.25, zoom: 2 });
+  });
+  test('the working copy keeps enough pixels for the largest zoom and never enlarges', async () => {
+    const large = await sharp(await prepareWorking(await solid(6000, 4000, '#ff0000'))).metadata();
+    expect([large.width, large.height]).toEqual([3072, 2048]);
+    const small = await sharp(await prepareWorking(await solid(800, 600, '#ff0000'))).metadata();
+    expect([small.width, small.height, small.format]).toEqual([800, 600, 'jpeg']);
+  });
+});
+
 describe('library', () => {
+  test('a fill layout renders the saved crop and a normal layout removes it', async () => {
+    const lib = library();
+    const photo = await lib.add('split.png', await split(2400, 1000));
+    const layout = { fill: true, solo: false, x: 0, y: 0.5, zoom: 2 };
+    expect(await lib.saveLayout(photo.id, layout)).toEqual(layout);
+    expect(lib.list()[0].layout).toEqual(layout);
+    const cropped = await raw((await lib.frame(photo.id, 'contain'))!);
+    expect(pixel(cropped, WIDTH - 1, HEIGHT / 2)[0]).toBeGreaterThan(240);
+    expect(pixel(cropped, WIDTH - 1, HEIGHT / 2)[2]).toBeLessThan(20);
+    await lib.saveLayout(photo.id, { ...layout, fill: false });
+    const contain = await raw((await lib.frame(photo.id, 'contain'))!);
+    expect(pixel(contain, 0, 0).every(channel => channel < 10)).toBe(true);
+  });
+  test('invalid layouts are rejected and a missing photo returns null', async () => {
+    const lib = library();
+    const added = await lib.add('a.png', await photo());
+    for (const bad of [null, { fill: true, solo: false, x: 2, y: 0.5, zoom: 1 },
+      { fill: true, solo: false, x: 0.5, y: 0.5, zoom: 4 }, { fill: 'yes', solo: false, x: 0.5, y: 0.5, zoom: 1 }]) {
+      await expect(lib.saveLayout(added.id, bad)).rejects.toThrow();
+    }
+    expect(await lib.saveLayout('missing', { fill: false, solo: false, x: 0.5, y: 0.5, zoom: 1 })).toBeNull();
+  });
+  test('solo portraits are not paired and a fill portrait uses its crop in the pair slot', async () => {
+    const lib = library();
+    const red = await lib.add('red.png', await solid(100, 200, '#ff0000'));
+    const split1 = await lib.add('split.png', await split(1000, 2000));
+    const blue = await lib.add('blue.png', await solid(100, 200, '#0000ff'));
+    await lib.saveLayout(split1.id, { fill: true, solo: false, x: 0, y: 0.5, zoom: 3 });
+    const paired = await raw((await lib.frame(red.id, 'contain'))!);
+    const right = PORTRAIT_WIDTH + DIVIDER_WIDTH;
+    expect(pixel(paired, right + 5, HEIGHT / 2)[0]).toBeGreaterThan(240);
+    expect(pixel(paired, WIDTH - 5, HEIGHT / 2)[0]).toBeGreaterThan(240);
+
+    await lib.saveLayout(split1.id, { fill: true, solo: true, x: 0, y: 0.5, zoom: 3 });
+    const skipped = await raw((await lib.frame(red.id, 'contain'))!);
+    expect(pixel(skipped, right + Math.floor(PORTRAIT_WIDTH / 2), HEIGHT / 2)[2]).toBeGreaterThan(240);
+    expect(await lib.frame(split1.id, 'contain')).toEqual(await lib.image(split1.id, 'contain'));
+    await lib.saveLayout(blue.id, { fill: false, solo: true, x: 0.5, y: 0.5, zoom: 1 });
+    expect(await lib.frame(red.id, 'contain')).toEqual(await lib.image(red.id, 'contain'));
+  });
+  test('photos without a working copy get one on first use', async () => {
+    const lib = library();
+    const photo = await lib.add('a.png', await solid(200, 100, '#ff0000'));
+    lib.db.query('UPDATE photos SET working=NULL WHERE id=?').run(photo.id);
+    expect(isJpeg((await lib.working(photo.id))!)).toBe(true);
+    expect((lib.db.query('SELECT working FROM photos WHERE id=?').get(photo.id) as { working: Uint8Array | null }).working)
+      .not.toBeNull();
+    expect(await lib.working('missing')).toBeNull();
+  });
   test('empty library and invalid uploads do not add rows', async () => {
     const lib = library();
     expect(lib.next(null, null)).toBeUndefined();
@@ -136,6 +206,9 @@ describe('library', () => {
       expect(columns).toContain('portrait');
       expect(columns).toContain('pair_contain');
       expect(columns).toContain('pair_cover');
+      for (const column of ['working', 'fill', 'solo', 'crop_x', 'crop_y', 'crop_zoom', 'fill_full', 'fill_pair']) {
+        expect(columns).toContain(column);
+      }
     } finally {
       migrated.db.close();
       rmSync(directory, { recursive: true, force: true });

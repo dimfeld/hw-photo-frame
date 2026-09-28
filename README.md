@@ -30,9 +30,16 @@ On Debian or Ubuntu, the command is provided by the `libheif-examples` package. 
 
 When the selected photo is in portrait orientation, the companion finds the next portrait photo in upload order. It places both photos side by side with a two-pixel black divider. If there is no other portrait photo, it shows the selected photo by itself. Landscape photos use the previous layout.
 
+To change the layout of one photo, click it and use the controls below the preview:
+
+- **Fill the screen with my own crop:** drag the photo and use the zoom slider (1× to 3×) to select the area to show. This setting replaces the global photo fit for this photo. For a portrait photo that is paired, the crop area has the shape of one half of the screen.
+- **Show alone:** for portrait photos only. The photo fills the full screen and is not paired. Other portrait photos also do not use it as a partner.
+
+Select **Save photo layout** to keep the changes.
+
 Set the photo time, crossfade time, and play order, then select **Save settings**. The crossfade defaults to two seconds; set it to zero to switch images immediately. Click a photo to preview it. The preview does not change the photo currently on the physical frame. The frame gets settings on its next request. When paused, touch its center to resume, or its left or right side to request a photo.
 
-The app stores originals, previews, prepared images, and settings in `photos.sqlite`. Each photo needs about 2.46 MB for its two full-frame pixel images, plus its original and JPEG previews. Portrait photos need about 1.23 MB more for the two side-by-side layouts. Stop the app before you copy the data directory for a backup. Keep the whole directory, including any SQLite WAL files. Run one app process for this library.
+The app stores originals, previews, prepared images, and settings in `photos.sqlite`. It also stores a working copy of each photo: a JPEG with the rotation applied, reduced only enough to fill the screen at 3× zoom (3072 × 1800 or larger). The crop editor shows this copy, and the server renders saved crops from it. Each photo needs about 2.46 MB for its two full-frame pixel images, plus its original and JPEG previews. Portrait photos need about 1.23 MB more for the two side-by-side layouts. Stop the app before you copy the data directory for a backup. Keep the whole directory, including any SQLite WAL files. Run one app process for this library.
 
 The web app is for a trusted home network. Anyone with access to its address can view and manage the library. Do not expose it to the public internet. `FRAME_TOKEN` can restrict the frame endpoint; it does not protect the web interface. Traffic uses local HTTP.
 
