@@ -50,6 +50,17 @@
     layout.x = moved.x; layout.y = moved.y;
   }
   function endDrag() { drag = null; }
+  // Left and right arrows select the previous and next photo, and wrap like the frame does.
+  function selectByKey(event: KeyboardEvent) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !current) return;
+    // Form controls such as the zoom slider use the arrow keys.
+    if ((event.target as HTMLElement).closest('input, select, textarea')) return;
+    event.preventDefault();
+    const index = data.photos.findIndex(p => p.id === current.id);
+    const step = event.key === 'ArrowRight' ? 1 : -1;
+    selected = data.photos[(index + step + data.photos.length) % data.photos.length].id;
+  }
   async function saveLayout() {
     if (!current) return;
     busy = true; failed = false;
@@ -102,6 +113,7 @@
   }
 </script>
 
+<svelte:window onkeydown={selectByKey}/>
 <svelte:head><title>Still — Photo frame</title><meta name="description" content="Your photos, at home. Manage your picture frame."/></svelte:head>
 
 <div class="shell">
